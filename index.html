@@ -617,7 +617,7 @@ function openEnvelope(){
     },520);
   },850);
 }
-/* 给 Terra 的信：打字机逐词打出，首次打开弹出，之后可在设置里重看 */
+/* 给 Terra 的信：打字机逐词打出，在设置里点"查看"打开 */
 const LETTER=["Fate sets the divine stage, we are the ones playing the game. Wherever you stand, may you remain fully and uncompromisingly yourself.",
 "Gratitude to all of life's chaotic ebbs and flows, for it is because of them that this exact encounter carries such profound weight.",
 "Here is a humble gift, still unrefined, yet offered in hopes that it walks beside you, helping you reach further toward the stars.",
@@ -1343,7 +1343,7 @@ function renderSettings(){
     <div class="list">
       <div class="row"><div class="grow">
         <div class="t">给 Terra 的信</div>
-      </div><button class="btn small ghost" onclick="showEnvelope()">重看</button></div>
+      </div><button class="btn small ghost" onclick="showEnvelope()">查看</button></div>
     </div>
     <div class="section-title">清理</div>
     <div class="list">
@@ -1498,7 +1498,6 @@ function confirmDocImport(){
 /* ============ 启动 ============ */
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal()});
 initFirebase();renderTabs();enterAnim();render();
-try{if(!localStorage.getItem('terra_letter'))showEnvelope()}catch(e){}
 </script>
 </body>
 </html>
