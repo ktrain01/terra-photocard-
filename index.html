@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#000000">
-<title>我的追星收藏站</title>
+<title>TERRA</title>
 <style>
 /* 快去写作业 CJK（手写中文） */
 @font-face{
@@ -785,7 +785,7 @@ function render(){
     `<div><div class="n">${ownN}</div><div class="l">小卡</div></div>`+
     `<div><div class="n">${wantN}</div><div class="l">求购中</div></div>`+
     `<div><div class="n">${DB.wishlist.length}</div><div class="l">心愿单</div></div>`;
-  document.title=(DB.settings.title||'TERRA').replace(/[^\u0000-\uFFFF]/g,'').trim()||'我的追星收藏站';
+  document.title=(DB.settings.title||'TERRA').replace(/[^\u0000-\uFFFF]/g,'').trim()||'TERRA';
   ({overview:renderOverview,cards:renderCards,carpool:renderCarpools,orders:renderOrders,merch:renderMerch,wishlist:renderWishlist,settings:renderSettings})[curTab]();
 }
 
