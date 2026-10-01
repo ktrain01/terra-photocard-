@@ -233,16 +233,21 @@ nav#tabs .tabbar{position:relative}
   display:none;align-items:center;justify-content:center;z-index:150;padding:24px}
 #letterOverlay.show{display:flex}
 #snowCv{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-#letterCard{position:relative;z-index:1}
-#letterCard{background:var(--card);border:1px solid var(--line);border-radius:22px;
-  max-width:420px;width:100%;padding:38px 30px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.5)}
-.letter{font-family:var(--hand);font-size:17px;line-height:2.05;color:var(--ink);margin-bottom:26px;min-height:230px;text-align:left}
+#letterCard{position:relative;z-index:1;width:min(620px,94vw);
+  background:linear-gradient(135deg,rgba(255,255,255,.17),rgba(255,255,255,.07));
+  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);
+  border:1px solid rgba(255,255,255,.30);border-radius:16px;
+  padding:36px 40px 30px;text-align:center;
+  box-shadow:0 24px 70px rgba(0,0,0,.5),inset 0 1px 0 rgba(255,255,255,.28),inset 0 -1px 0 rgba(255,255,255,.08)}
+.letter{font-family:var(--hand);font-size:16px;line-height:2;color:#fff;margin-bottom:24px;min-height:200px;text-align:left;
+  text-shadow:0 1px 10px rgba(0,0,0,.4)}
 .letter .stanza{margin:0 0 16px}
 .letter .stanza:last-child{margin-bottom:0}
 .lw{opacity:0;transition:opacity .35s}
 .lcur{display:inline-block;width:2px;height:1.05em;background:var(--ink);margin-left:3px;vertical-align:-3px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
-#letterBtn{opacity:0;pointer-events:none;transition:opacity .8s}
+#letterBtn{opacity:0;pointer-events:none;transition:opacity .8s;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.55)}
+#letterBtn:hover{background:rgba(255,255,255,.14);filter:none}
 .empty{text-align:center;color:var(--muted);padding:48px 10px;font-size:14px}
 /* ---------- 切卡详情 ---------- */
 .legend{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0;align-items:center}
