@@ -216,6 +216,20 @@ nav#tabs .tabbar{position:relative}
 #addOverlay.picking .fan-card.on{opacity:1;transform:translateY(-12px) scale(1.02)}
 .datefield{width:100%;padding:11px 14px;border-radius:12px;border:1px solid var(--line);font-size:15px;background:var(--field);color:var(--ink);font-family:inherit;text-align:left;cursor:pointer}
 .datefield.ph{color:var(--muted)}
+.selfield{width:100%;padding:11px 14px;border-radius:12px;border:1px solid var(--line);font-size:15px;background:var(--field);color:var(--ink);font-family:inherit;text-align:left;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.selfield::after{content:'⌄';color:var(--muted);font-size:14px;line-height:1}
+.toolbar .selfield{width:auto;padding:10px 14px;background:var(--card);font-size:14px}
+.imp-row .selfield{width:auto;padding:7px 8px;border-radius:10px;font-size:12px;flex-shrink:0}
+#selOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:230;padding:20px}
+#selOverlay.show{display:flex}
+#selSheet{background:var(--card);border:1px solid var(--line);border-radius:22px;width:100%;max-width:340px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:pop .28s cubic-bezier(.2,.9,.3,1.15) both}
+#selTitle{font-size:13px;color:var(--muted);letter-spacing:.04em;margin-bottom:8px}
+.sel-list{max-height:300px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.sel-opt{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:13px 12px;border:none;background:transparent;color:var(--ink);font-size:15px;border-radius:12px;cursor:pointer;font-family:inherit;text-align:left}
+.sel-opt:active{background:var(--press)}
+.sel-opt.sel{background:var(--t2);font-weight:600}
+.sel-opt .ck{opacity:0;font-size:13px;flex:none}
+.sel-opt.sel .ck{opacity:1}
 #dpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:220;padding:20px}
 #dpOverlay.show{display:flex}
 #dpSheet{background:var(--card);border:1px solid var(--line);border-radius:22px;width:100%;max-width:340px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:pop .28s cubic-bezier(.2,.9,.3,1.15) both}
@@ -445,6 +459,17 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
       <span style="flex:1"></span>
       <button type="button" class="btn ghost small" onclick="closeDatePick()">取消</button>
       <button type="button" class="btn small" onclick="dpConfirm()">确定</button>
+    </div>
+  </div>
+</div>
+<div id="selOverlay" onclick="if(event.target===this)closeSelPick()">
+  <div id="selSheet" role="dialog" aria-modal="true" aria-label="选择">
+    <div id="selTitle"></div>
+    <div class="sel-list" id="selList"></div>
+    <div class="dp-btns">
+      <span style="flex:1"></span>
+      <button type="button" class="btn ghost small" onclick="closeSelPick()">取消</button>
+      <button type="button" class="btn small" onclick="selConfirm()">确定</button>
     </div>
   </div>
 </div>
@@ -697,6 +722,11 @@ function authErr(code){
   return m[code]||code;
 }
 
+function backupHint(){
+  if(FIREBASE_ON&&currentUser)return '已登录，数据会自动同步到云端。导出一份本地备份，可以当作额外保险。';
+  if(FIREBASE_ON)return '当前未登录，云同步未开启：数据只保存在这台设备，换手机或清缓存会丢。登录后会自动同步到云端，未登录时请定期导出备份。';
+  return '数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！';
+}
 function accountHTML(){
   if(!FIREBASE_ON){
     return `<div class="acct">
@@ -938,6 +968,38 @@ function dpConfirm(){
   if(btn){btn.textContent=dpSel||'选择日期';btn.classList.toggle('ph',!dpSel)}
   closeDatePick();applyI18n();
 }
+/* ============ 通用选择：和日期一样的弹层，先选好再点确定 ============ */
+const SEL_REG={};
+let selKey=null,selVal='';
+function selFieldHTML(key,pairs,cur,withInput,extra){
+  const reg={pairs:pairs};if(extra)Object.assign(reg,extra);SEL_REG[key]=reg;
+  const p=pairs.find(x=>String(x.v)===String(cur))||pairs[0];
+  const effV=p?p.v:cur;
+  return `<button type="button" class="selfield" id="${key}_btn" onclick="openSelPick('${key}')"><span>${esc(p?p.t:'')}</span></button>`+(withInput?`<input type="hidden" id="${key}" value="${esc(effV==null?'':String(effV))}">`:'');
+}
+function openSelPick(key){
+  const reg=SEL_REG[key];if(!reg)return;
+  selKey=key;
+  selVal=reg.get?reg.get():(document.getElementById(key)?document.getElementById(key).value:'');
+  document.getElementById('selTitle').textContent=trText(reg.title||'选择');
+  renderSelList();
+  document.getElementById('selOverlay').classList.add('show');
+}
+function renderSelList(){
+  const reg=SEL_REG[selKey];if(!reg)return;
+  document.getElementById('selList').innerHTML=reg.pairs.map((p,i)=>`<button type="button" class="sel-opt${String(p.v)===String(selVal)?' sel':''}" onclick="selPickIdx(${i})"><span>${esc(trText(p.t))}</span><span class="ck">✓</span></button>`).join('');
+}
+function selPickIdx(i){const reg=SEL_REG[selKey];if(!reg)return;selVal=reg.pairs[i].v;renderSelList()}
+function closeSelPick(){document.getElementById('selOverlay').classList.remove('show')}
+function selConfirm(){
+  const reg=SEL_REG[selKey];if(!reg){closeSelPick();return}
+  if(reg.commit)reg.commit(selVal);
+  else{const inp=document.getElementById(selKey);if(inp)inp.value=selVal}
+  const p=reg.pairs.find(x=>String(x.v)===String(selVal));
+  const b=document.getElementById(selKey+'_btn');
+  if(b&&p)b.querySelector('span').textContent=p.t;
+  closeSelPick();applyI18n();
+}
 function dpClear(){dpSel='';dpConfirm()}
 /* ============ 添加：先选要加什么，再进对应表单 ============ */
 function openAddSheet(){
@@ -1171,12 +1233,8 @@ function renderCards(){
   document.getElementById('app').innerHTML=`
     <div class="toolbar">
       <input type="search" placeholder="搜索卡名 / 成员 / 专辑…" value="${esc(cardFilter.q)}" oninput="cardFilter.q=this.value;renderCardResults()">
-      <select onchange="cardFilter.status=this.value;renderCardResults()">
-        <option value="">全部状态</option>${Object.entries(CARD_STATUS).map(([k,v])=>`<option value="${k}" ${cardFilter.status===k?'selected':''}>${v}</option>`).join('')}
-      </select>
-      <select onchange="cardFilter.member=this.value;renderCardResults()">
-        <option value="">全部成员</option>${members.map(m=>`<option ${cardFilter.member===m?'selected':''}>${esc(m)}</option>`).join('')}
-      </select>
+      ${selFieldHTML('fltCardStatus',[{v:'',t:'全部状态'}].concat(Object.entries(CARD_STATUS).map(([k,v])=>({v:k,t:v}))),cardFilter.status,0,{title:'状态',get:()=>cardFilter.status,commit:v=>{cardFilter.status=v;renderCardResults()}})}
+      ${selFieldHTML('fltCardMember',[{v:'',t:'全部成员'}].concat(members.map(m=>({v:m,t:m}))),cardFilter.member,0,{title:'成员',get:()=>cardFilter.member,commit:v=>{cardFilter.member=v;renderCardResults()}})}
       <div class="seg">
         <button data-cv="grid" class="${cardView==='grid'?'on':''}" onclick="setCardView('grid')">网格</button>
         <button data-cv="list" class="${cardView==='list'?'on':''}" onclick="setCardView('list')">列表</button>
@@ -1195,13 +1253,13 @@ function editCard(id){
     </div>
     <div class="row2">
       <div><label>版本</label><input id="f_version" value="${esc(c.version||'')}" placeholder="例：预售特典 / 签售"></div>
-      <div><label>购买渠道</label><select id="f_channel">${['韩国','日本','国内','其他'].map(ch=>`<option value="${ch}" ${c.channel===ch?'selected':''}>${ch}</option>`).join('')}</select></div>
+      <div><label>购买渠道</label>${selFieldHTML('f_channel',['韩国','日本','国内','其他'].map(ch=>({v:ch,t:ch})),c.channel,1,{title:'购买渠道'})}</div>
     </div>
     <div class="row2">
       <div><label>购入价 (¥)</label><input id="f_price" type="number" min="0" value="${c.price||''}"></div>
       <div><label>购入日期</label>${dateFieldHTML('f_date',c.date||'')}</div>
     </div>
-    <div><label>状态</label><select id="f_status">${Object.entries(CARD_STATUS).map(([k,v])=>`<option value="${k}" ${c.status===k?'selected':''}>${v}</option>`).join('')}</select></div>
+    <div><label>状态</label>${selFieldHTML('f_status',Object.entries(CARD_STATUS).map(([k,v])=>({v:k,t:v})),c.status,1,{title:'状态'})}</div>
     <label>备注</label><textarea id="f_note" placeholder="卖家、瑕疵、物流…">${esc(c.note||'')}</textarea>
     ${photoFieldHTML(c.photo)}
   `,()=>{
@@ -1327,10 +1385,10 @@ function addOrderCard(oid){
   openModal('添加卡片',`
     <label>卡片名称 *</label><input id="f_title" placeholder="例：NCT Dream 限量小卡">
     <div class="row2">
-      <div><label>所属组员</label><select id="f_member">${o.members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+      <div><label>所属组员</label>${selFieldHTML('f_member',o.members.map(m=>({v:m.id,t:m.name})),(o.members[0]||{}).id,1,{title:'所属组员'})}</div>
       <div><label>价格 (¥)</label><input id="f_price" type="number" min="0"></div>
     </div>
-    <label>状态</label><select id="f_status">${Object.entries(CARD_ST).map(([k,[t]])=>`<option value="${k}">${t}</option>`).join('')}</select>
+    <label>状态</label>${selFieldHTML('f_status',Object.entries(CARD_ST).map(([k,x])=>({v:k,t:x[0]})),Object.keys(CARD_ST)[0],1,{title:'状态'})}
   `,()=>{
     const title=val('f_title');if(!title){toast('名称不能为空');return false}
     o.cards.unshift({id:uid(),title,memberId:val('f_member'),price:+val('f_price')||0,status:val('f_status')});
@@ -1372,7 +1430,7 @@ openModal(id?'编辑切卡记录':'添加切卡记录',`
 <label>参与的卡</label><input id="f_items" value="${esc(o.items||'')}" placeholder="例：成员A 初雪特典卡 ×2">
 <div class="row2">
 <div><label>金额 (¥)</label><input id="f_amount" type="number" min="0" value="${o.amount||''}"></div>
-<div><label>状态</label><select id="f_status">${ORDER_STATUS.map(s=>`<option value="${s}" ${o.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+<div><label>状态</label>${selFieldHTML('f_status',ORDER_STATUS.map(s=>({v:s,t:s})),o.status,1,{title:'状态'})}</div>
 </div>
 <label>日期</label>${dateFieldHTML('f_date',o.date||'')}
 <label>备注</label><textarea id="f_note" placeholder="团长、转运单号…">${esc(o.note||'')}</textarea>
@@ -1486,7 +1544,7 @@ function addCarParcel(cid){
   openModal('添加包裹',`
     <label>包裹内容 *</label><input id="f_title" placeholder="例：初雪特典卡 ×2">
     <div class="row2">
-      <div><label>所属成员</label><select id="f_member">${cp.members.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+      <div><label>所属成员</label>${selFieldHTML('f_member',cp.members.map(m=>({v:m.id,t:m.name})),(cp.members[0]||{}).id,1,{title:'所属成员'})}</div>
       <div><label>重量</label><input id="f_weight" placeholder="例：200g"></div>
     </div>
     <label>备注</label><input id="f_note" placeholder="例：和海报一起">
@@ -1524,7 +1582,7 @@ openModal(id?'编辑拼车':'发起拼车',`
 <label>拼车名称 *</label><input id="f_title" value="${esc(cp.title||'')}" placeholder="例：9月韩邮拼车">
 <div class="row2">
 <div><label>渠道</label><input id="f_channel" value="${esc(cp.channel||'')}" placeholder="例：韩国 / 日本"></div>
-<div><label>状态</label><select id="f_status">${CARPOOL_STATUS.map(s=>`<option value="${s}" ${cp.status===s?'selected':''}>${s}</option>`).join('')}</select></div>
+<div><label>状态</label>${selFieldHTML('f_status',CARPOOL_STATUS.map(s=>({v:s,t:s})),cp.status,1,{title:'状态'})}</div>
 </div>
 <label>拼车截止日期</label>${dateFieldHTML('f_deadline',cp.deadline||'')}
 <label>备注</label><textarea id="f_note" placeholder="车头、转运公司…">${esc(cp.note||'')}</textarea>
@@ -1573,7 +1631,7 @@ const m=id?DB.merch.find(x=>x.id===id):{};
 openModal(id?'编辑周边':'添加周边',`
 <label>名称 *</label><input id="f_name" value="${esc(m.name||'')}" placeholder="例：官方手灯 ver.2">
 <div class="row2">
-<div><label>类型</label><select id="f_type">${['专辑','手灯','海报','衣服','玩偶','其他'].map(t=>`<option value="${t}" ${m.type===t?'selected':''}>${t}</option>`).join('')}</select></div>
+<div><label>类型</label>${selFieldHTML('f_type',['专辑','手灯','海报','衣服','玩偶','其他'].map(x=>({v:x,t:x})),m.type,1,{title:'类型'})}</div>
 <div><label>价格 (¥)</label><input id="f_price" type="number" min="0" value="${m.price||''}"></div>
 </div>
 <div class="row2">
@@ -1613,9 +1671,7 @@ function renderConcerts(){
   const list=[...DB.concerts].filter(c=>!concertFilter.status||c.status===concertFilter.status).sort(concertSort);
   document.getElementById('app').innerHTML=`
     <div class="toolbar">
-      <select onchange="concertFilter.status=this.value;renderConcerts()">
-        <option value="">全部状态</option>${Object.entries(CONCERT_STATUS).map(([k,v])=>`<option value="${k}" ${concertFilter.status===k?'selected':''}>${v}</option>`).join('')}
-      </select>
+      ${selFieldHTML('fltConcertStatus',[{v:'',t:'全部状态'}].concat(Object.entries(CONCERT_STATUS).map(([k,v])=>({v:k,t:v}))),concertFilter.status,0,{title:'状态',get:()=>concertFilter.status,commit:v=>{concertFilter.status=v;renderConcerts()}})}
       <button class="btn" onclick="editConcert()">+ 演唱会</button>
     </div>
     ${list.length?list.map(c=>{
@@ -1655,7 +1711,7 @@ function editConcert(id){
 </div>
 <div class="row2">
 <div><label>票价 (¥)</label><input id="f_price" type="number" min="0" value="${c.price||''}"></div>
-<div><label>状态</label><select id="f_status">${Object.entries(CONCERT_STATUS).map(([k,v])=>`<option value="${k}" ${c.status===k?'selected':''}>${v}</option>`).join('')}</select></div>
+<div><label>状态</label>${selFieldHTML('f_status',Object.entries(CONCERT_STATUS).map(([k,v])=>({v:k,t:v})),c.status,1,{title:'状态'})}</div>
 </div>
 <label>备注</label><textarea id="f_note">${esc(c.note||'')}</textarea>
 `,()=>{
@@ -1766,7 +1822,7 @@ function renderSettings(){
     <div class="list">
       <div class="row"><div class="grow">
         <div class="t">导出 / 导入</div>
-        <div class="s">数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！</div>
+        <div class="s">${backupHint()}</div>
         <div class="toolbar t10">
           <button class="btn small" onclick="exportJSON()">导出备份文件</button>
           <button class="btn small ghost" onclick="document.getElementById('importFile').click()">导入备份</button>
@@ -1821,9 +1877,11 @@ function wipeAll(){
 let docRows=[];
 function openDocImport(){
   openModal('从表格文档导入',
-    '<div style="font-size:13px;color:var(--muted);margin-bottom:6px">把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。</div>'
+    '<div style="font-size:13px;color:var(--muted);margin-bottom:6px">把 Excel / WPS 里的表格复制粘贴进来，或在下方选择文件（只支持 Excel / CSV）。切卡分账表（带群成员、物品、收款状态）会自动整表导入成一个切卡订单。图片传不过来，导入后补传就行。</div>'
     +'<label>粘贴表格内容</label>'
-    +'<textarea id="docText" rows="9" placeholder="图片\t卡片名字\t状态\t金额\n\t初雪特典卡\t已拥有\t¥45"></textarea>',
+    +'<textarea id="docText" rows="9" placeholder="图片\t卡片名字\t状态\t金额\n\t初雪特典卡\t已拥有\t¥45"></textarea>'
+    +'<label>或选择文件（只支持 Excel / CSV）</label>'
+    +'<input type="file" id="docFile" accept=".xlsx,.csv" onchange="onDocFile(this)">',
     ()=>{
       const t=val('docText');
       if(!t){toast('先粘贴表格内容');return false}
@@ -1833,6 +1891,42 @@ function openDocImport(){
       return false;
     });
   document.getElementById('modalOk').textContent='开始解析';
+}
+async function readTextSmart(f){
+  const buf=await f.arrayBuffer();
+  let t=new TextDecoder('utf-8').decode(buf);
+  if(t.includes('�')){try{t=new TextDecoder('gbk').decode(buf)}catch(e){}}
+  return t;
+}
+function loadXLSX(){
+  return new Promise((res,rej)=>{
+    if(window.XLSX)return res();
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+    s.onload=()=>res();s.onerror=()=>rej(new Error('xlsx load failed'));
+    document.head.appendChild(s);
+  });
+}
+async function onDocFile(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const nm=f.name.toLowerCase();
+  try{
+    if(nm.endsWith('.csv')){
+      document.getElementById('docText').value=await readTextSmart(f);
+      toast('文件已载入，点开始解析');
+    }else if(nm.endsWith('.xlsx')){
+      toast('正在读取 Excel…');
+      await loadXLSX();
+      const buf=await f.arrayBuffer();
+      const wb=XLSX.read(buf,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      document.getElementById('docText').value=XLSX.utils.sheet_to_csv(ws,{FS:'\t'});
+      toast('文件已载入，点开始解析');
+    }else{
+      toast('只支持 Excel（.xlsx）和 CSV 文件');
+    }
+  }catch(e){toast('文件读取失败，试试复制粘贴')}
+  input.value='';
 }
 function parsePrice(s){
   if(s==null)return null;
@@ -1846,6 +1940,13 @@ function normStatus(s){
   if(/已出|卖掉|已卖|售出/.test(s))return 'own';
   return 'own';
 }
+function normPayStatus(s){
+  s=String(s||'');
+  if(/补邮/.test(s))return 'postage_due';
+  if(/已发|发货|寄出/.test(s))return 'shipped';
+  if(/已收|已付|收齐|付清|已收款|到账/.test(s))return 'paid';
+  return 'pending';
+}
 function parseDocTable(text){
   const lines=text.split(/\r?\n/).filter(l=>l.trim()&&!/^\|[\s\-|:]+\|$/.test(l.trim()));
   if(!lines.length)return [];
@@ -1858,6 +1959,26 @@ function parseDocTable(text){
   };
   const rows=lines.map(splitRow).filter(r=>r.length&&r.some(c=>c));
   if(!rows.length)return [];
+  /* 切卡分账表：表头带「群成员 + 收款状态」→ 整表导成一个切卡订单 */
+  const h0=rows[0].join(' ');
+  if(/群成员/.test(h0)&&/收款/.test(h0)){
+    const findCol=(...ws)=>{for(let i=0;i<rows[0].length;i++){if(ws.some(w=>rows[0][i].includes(w)))return i}return -1};
+    const ciM=findCol('群成员','成员'),ciI=findCol('物品','品名','名称'),ciQ=findCol('数量'),ciP=findCol('金额','总价','价格'),ciS=findCol('收款状态','付款状态','状态');
+    if(ciI>=0){
+      const out=[];let lastMember='';
+      for(let i=1;i<rows.length;i++){
+        const cols=rows[i];
+        const mv=ciM>=0?(cols[ciM]||'').trim():'';
+        if(mv)lastMember=mv;
+        const item=(cols[ciI]||'').trim();
+        if(!item||item==='物品'||/合计|总计|小计/.test(item))continue;
+        const qty=ciQ>=0?(parseInt(cols[ciQ])||1):1;
+        const price=parsePrice(ciP>=0?cols[ciP]:'')||0;
+        out.push({qieka:true,member:lastMember,name:qty>1?item+' ×'+qty:item,price:price,status:normPayStatus(ciS>=0?cols[ciS]:''),checked:true});
+      }
+      return out;
+    }
+  }
   const keys={name:['名字','名称','卡名','卡片','标题','品名'],
     status:['状态'],price:['金额','价格','价','¥','￥','元'],
     member:['成员','人物']};
@@ -1896,6 +2017,7 @@ function parseDocTable(text){
   return out;
 }
 function renderDocPreview(){
+  if(docRows.length&&docRows[0].qieka){renderQiekaPreview();return}
   const typeOpts={card:'小卡',order:'切卡',merch:'周边',wish:'心愿单'};
   const stOpts={own:'已拥有',wanted:'求购中'};
   document.getElementById('modalTitle').textContent='确认导入（'+docRows.length+' 条）';
@@ -1903,10 +2025,10 @@ function renderDocPreview(){
   docRows.forEach((r,i)=>{
     h+='<div class="imp-row'+(r.checked?'':' off')+'" data-i="'+i+'">'
       +'<input type="checkbox"'+(r.checked?' checked':'')+' onchange="docRows['+i+'].checked=this.checked;this.closest(\'.imp-row\').classList.toggle(\'off\',!this.checked)">'
-      +'<select onchange="docRows['+i+'].type=this.value">'+Object.keys(typeOpts).map(k=>'<option value="'+k+'"'+(r.type===k?' selected':'')+'>'+typeOpts[k]+'</option>').join('')+'</select>'
+      +selFieldHTML('docT'+i,Object.keys(typeOpts).map(k=>({v:k,t:typeOpts[k]})),r.type,0,{title:'分类',get:()=>docRows[i].type,commit:v=>{docRows[i].type=v}})
       +'<input type="text" value="'+esc(r.name)+'" oninput="docRows['+i+'].name=this.value" placeholder="名字">'
       +'<input type="text" value="'+esc(r.member)+'" oninput="docRows['+i+'].member=this.value" placeholder="成员" style="max-width:64px;flex:0 1 64px">'
-      +'<select onchange="docRows['+i+'].status=this.value">'+Object.keys(stOpts).map(k=>'<option value="'+k+'"'+(r.status===k?' selected':'')+'>'+stOpts[k]+'</option>').join('')+'</select>'
+      +selFieldHTML('docS'+i,Object.keys(stOpts).map(k=>({v:k,t:stOpts[k]})),r.status,0,{title:'状态',get:()=>docRows[i].status,commit:v=>{docRows[i].status=v}})
       +'<input type="number" value="'+(r.price||'')+'" oninput="docRows['+i+'].price=+this.value||0" placeholder="¥">'
       +'</div>';
   });
@@ -1930,6 +2052,39 @@ function confirmDocImport(){
   }
   saveDB();closeModal();render();toast('已导入 '+n+' 条记录');
 }
+function renderQiekaPreview(){
+  const stPairs=Object.entries(CARD_ST).map(([k,x])=>({v:k,t:x[0]}));
+  const mset=new Set(docRows.map(r=>r.member).filter(Boolean));
+  const total=docRows.reduce((s,r)=>s+(+r.price||0),0);
+  document.getElementById('modalTitle').textContent='确认导入（切卡订单）';
+  let h='<div style="font-size:13px;color:var(--muted);margin-bottom:8px">识别为切卡分账表，将整表导入成一个切卡订单：'+mset.size+' 位成员 · '+docRows.length+' 件物品 · 合计 ¥'+total+'</div>'
+    +'<label>订单名称</label><input id="qk_title" value="切卡表导入">';
+  docRows.forEach((r,i)=>{
+    h+='<div class="imp-row'+(r.checked?'':' off')+'" data-i="'+i+'">'
+      +'<input type="checkbox"'+(r.checked?' checked':'')+' onchange="docRows['+i+'].checked=this.checked;this.closest(\'.imp-row\').classList.toggle(\'off\',!this.checked)">'
+      +'<input type="text" value="'+esc(r.member)+'" oninput="docRows['+i+'].member=this.value" placeholder="成员" style="max-width:64px;flex:0 1 64px">'
+      +'<input type="text" value="'+esc(r.name)+'" oninput="docRows['+i+'].name=this.value" placeholder="物品">'
+      +selFieldHTML('qkS'+i,stPairs,r.status,0,{title:'状态',get:()=>docRows[i].status,commit:v=>{docRows[i].status=v}})
+      +'<input type="number" value="'+(r.price||'')+'" oninput="docRows['+i+'].price=+this.value||0" placeholder="¥">'
+      +'</div>';
+  });
+  document.getElementById('modalBody').innerHTML=h;
+  const ok=document.getElementById('modalOk');
+  ok.textContent='确认导入';
+  ok.onclick=()=>{confirmQiekaImport()};
+  applyI18n();
+}
+function confirmQiekaImport(){
+  const rows=docRows.filter(r=>r.checked&&String(r.name).trim());
+  if(!rows.length){toast('没有勾选任何行');return}
+  const mmap=new Map();const members=[];
+  const keyOf=r=>String(r.member||'').trim()||'未命名成员';
+  for(const r of rows){const nm=keyOf(r);if(!mmap.has(nm)){const m={id:uid(),name:nm};mmap.set(nm,m);members.push(m)}}
+  const cards=rows.map(r=>({id:uid(),title:String(r.name).trim(),memberId:mmap.get(keyOf(r)).id,price:+r.price||0,status:r.status||'pending'}));
+  const total=cards.reduce((s,c)=>s+c.price,0);
+  DB.orders.unshift({id:uid(),title:val('qk_title')||'切卡表导入',items:'',amount:total,status:'拼团中',date:'',note:'从切卡表导入',members:members,cards:cards,postage:{total:0,paid:{}}});
+  saveDB();closeModal();render();toast('已导入切卡订单：'+members.length+' 位成员、'+cards.length+' 件物品');
+}
 
 /* ============ 多语言：中文 / English / 한국어（只翻译界面文案，数据原文不动） ============ */
 let LANG=(DB.settings&&DB.settings.lang)||'zh';
@@ -1945,12 +2100,12 @@ en:{
 '搜索周边…':'Search merch…','还没有周边，海报手灯专辑都可以记在这里':'No merch yet — posters, light sticks, albums, anything.','没有找到符合条件的周边':'No merch matches your search','编辑周边':'Edit Merch','添加周边':'Add Merch','名称 *':'Name *','类型':'Type','购买日期':'Purchase Date','专辑':'Album','手灯':'Light Stick','海报':'Poster','衣服':'Clothing','玩偶':'Plush',
 '+ 演唱会':'+ Concert','待定':'TBD','日期待定':'Date TBD','就是今天':"It's today!",'编辑演唱会':'Edit Concert','添加演唱会':'Add Concert','演唱会名称 *':'Concert Name *','艺人':'Artist','城市':'City','场馆 / 地址':'Venue / Address','票价 (¥)':'Ticket Price (¥)','想去':'Want to Go','已买票':'Ticketed','已参加':'Attended','还没有演唱会，点击「＋ 演唱会」开始记录吧':'No concerts yet. Tap "+ Concert" to start.',
 '+ 添加心愿':'+ Add Wish','已收到':'Got It','编辑心愿':'Edit Wish','添加心愿':'Add Wish','想收的卡 *':'Card You Want *','目标价 (¥)':'Target Price (¥)','还没有心愿，想收的卡都列在这里':"No wishes yet — list the cards you're hunting for.",'已收到！自动转入小卡收藏':'Got it! Moved into your collection.','从心愿单转入':'From wishlist','从表格导入':'From table import',
-'网站标题':'Site Title','副标题':'Subtitle','头像':'Avatar','更换头像':'Change Avatar','移除头像':'Remove Avatar','也可以直接点击首页的头像更换':'You can also tap the avatar on the home page.','封面背景':'Cover Background','更换封面背景':'Change Cover','恢复默认':'Restore Default','也可以直接点击首页的封面更换':'You can also tap the cover on the home page.','点击更换封面背景':'Tap to change cover','联系方式':'Contact','外观':'Appearance','跟随系统':'System','深色':'Dark','浅色':'Light','跟随系统会随手机的深色 / 浅色模式自动切换':"Follows your phone's dark / light mode automatically.",'保存设置':'Save Settings','设置已保存':'Settings saved','数据备份':'Data Backup','导出 / 导入':'Export / Import','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':"Data lives only in this device's browser — switching phones or clearing cache will lose it. Export backups regularly!",'导出备份文件':'Export Backup','导入备份':'Import Backup','从表格导入':'Import from Table','给 Terra 的信':'A Letter for Terra','查看':'View','清理':'Cleanup','删除全部数据':'Delete All Data','不可恢复，请先导出备份':"This can't be undone — export a backup first.",'全部删除':'Delete All','语言':'Language',
+'网站标题':'Site Title','副标题':'Subtitle','头像':'Avatar','更换头像':'Change Avatar','移除头像':'Remove Avatar','也可以直接点击首页的头像更换':'You can also tap the avatar on the home page.','封面背景':'Cover Background','更换封面背景':'Change Cover','恢复默认':'Restore Default','也可以直接点击首页的封面更换':'You can also tap the cover on the home page.','点击更换封面背景':'Tap to change cover','联系方式':'Contact','外观':'Appearance','跟随系统':'System','深色':'Dark','浅色':'Light','跟随系统会随手机的深色 / 浅色模式自动切换':"Follows your phone's dark / light mode automatically.",'保存设置':'Save Settings','设置已保存':'Settings saved','数据备份':'Data Backup','导出 / 导入':'Export / Import','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':"Data lives only in this device's browser — switching phones or clearing cache will lose it. Export backups regularly!",'当前未登录，云同步未开启：数据只保存在这台设备，换手机或清缓存会丢。登录后会自动同步到云端，未登录时请定期导出备份。':"You're not signed in, so cloud sync is off: data lives only on this device and will be lost if you switch phones or clear the cache. It syncs to the cloud once you sign in — until then, export backups regularly.",'已登录，数据会自动同步到云端。导出一份本地备份，可以当作额外保险。':"You're signed in — data syncs to the cloud automatically. An exported local backup is good extra insurance.",'导出备份文件':'Export Backup','导入备份':'Import Backup','从表格导入':'Import from Table','给 Terra 的信':'A Letter for Terra','查看':'View','清理':'Cleanup','删除全部数据':'Delete All Data','不可恢复，请先导出备份':"This can't be undone — export a backup first.",'全部删除':'Delete All','语言':'Language',
 '头像已更换':'Avatar updated','封面背景已更换':'Cover updated','已恢复默认封面':'Cover restored','已移除头像':'Avatar removed','备份文件已下载':'Backup downloaded','导入会覆盖当前所有数据，确定吗？（建议先导出备份）':'Importing will overwrite all current data. Continue? (Back up first!)','备份已导入':'Backup imported','文件格式不对，导入失败':'Invalid file — import failed','确定删除全部数据吗？此操作不可恢复！':'Delete ALL data? This cannot be undone!','再确认一次：真的要删除全部数据吗？':'One more check — really delete everything?','已清空全部数据':'All data cleared','已删除':'Deleted',
 '确定删除这张小卡吗？':'Delete this card?','确定删除这条切卡记录吗？':'Delete this group order?','确定删除这次拼车吗？':'Delete this group shipment?','确定删除这个周边吗？':'Delete this merch item?','确定删除这场演唱会吗？':'Delete this concert?','确定删除这条心愿吗？':'Delete this wish?','删除这位组员？':'Delete this member?','删除这位成员？':'Delete this member?',
 '云同步未启用':'Cloud Sync Off','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':"You're in local mode — data stays on this device. Set up Firebase with the guide below to enable email sign-in.",'查看配置指南':'Setup Guide','已登录':'Signed In','退出登录':'Sign Out','邮箱登录':'Email Sign-In','邮箱':'Email','密码':'Password','登录':'Sign In','注册新账号':'Create Account','输入邮箱和密码':'Enter your email and password','密码至少6位':'Password must be at least 6 characters','注册成功，已登录':"Account created — you're signed in.",'已退出登录':'Signed out','邮箱格式不对':'Invalid email format','账号不存在，请先注册':'Account not found — create one first.','密码错误':'Wrong password','邮箱已注册，直接登录':'Email already registered — sign in instead.','密码强度不够':'Password too weak','尝试太多次，稍后再试':'Too many attempts — try again later.','网络连接问题':'Network error','邮箱或密码错误':'Wrong email or password','云端数据已同步':'Cloud data synced','本机数据已上传到云端':'Local data uploaded to the cloud','云端同步失败，暂用本地数据':'Cloud sync failed — using local data.','同步失败请确认是否开启 VPN':'If sync fails, make sure your VPN is on','本地存储空间不足，试试删掉一些照片':'Local storage is full — try deleting some photos.',
 '云同步配置指南':'Cloud Sync Setup Guide','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'Takes about 5 minutes. Use your own Google account so the data belongs only to you.','1. 创建 Firebase 项目':'1. Create a Firebase Project','打开':'Open','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'Sign in → Create a project (e.g. photocard-diary) → turn off Analytics → Create. Then at the top left, Project Overview → click','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'to register a Web app → copy the firebaseConfig — you will need it in step 5.','2. 开启邮箱登录':'2. Enable Email Sign-In','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'Left sidebar: Build → Authentication → Get started → Sign-in method → enable "Email/Password" → Save.','3. 建数据库（存小卡数据）':'3. Create the Database (for card data)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'Left sidebar: Build → Firestore Database → Create database → location asia-east1 → Start in production mode → open the "Rules" tab, paste the block below → Publish:','这条规则的意思：每个人只能读写自己的数据。':'This rule means everyone can only read and write their own data.','4. 照片不用单独设置':'4. Photos Need No Extra Setup','照片会和数据一起存进第 3 步的数据库，不用开 Storage，也不用升级付费计划。第 3 步的规则里已经包含了照片的权限，这一步跳过就行。':'Photos are stored in the step 3 database together with your data — no need to enable Storage or upgrade to a paid plan. The step 3 rules already cover photos, so you can skip this step.','5. 下载网页文件，贴入配置':'5. Download the Page File & Paste the Config','在下面输入你的生日，下载网页文件：':'Enter your birthday below to download the page file:','输入生日':'Enter birthday','下载':'Download','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'Then open the downloaded file in a text editor, find FIREBASE_CONFIG in the script at the top, and replace each PASTE_HERE with the matching value from the firebaseConfig you copied in step 1. Save, reopen the file in your browser, and continue.','6. 完成':'6. Done','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'In the site\'s Settings, enter an email and password and tap "Create Account". From then on, sign in with that email on any device and your data is there. Your first sign-in uploads your existing local data automatically.','不配置也能用，但建议每日一备份。':'It works without setup too — but back up daily.','生日不对，再想想':'Wrong birthday — think again.','已开始下载':'Download started',
-'从表格文档导入':'Import from a Table','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':"Copy a table from Excel / WPS / Notes and paste it here (headers help: Image, Card Name, Status, Price). Images can't be pasted — add photos later in the card editor.",'粘贴表格内容':'Paste Table','开始解析':'Parse','先粘贴表格内容':'Paste a table first','没解析出有效行，检查下格式':'No valid rows found — check the format.','核对一下，勾选要导入的行，分类和状态都能改：':'Check the rows to import — you can change type and status:','确认导入':'Confirm Import','名字':'Name','没有勾选任何行':'No rows selected',
+'从表格文档导入':'Import from a Table','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':"Copy a table from Excel / WPS / Notes and paste it here (headers help: Image, Card Name, Status, Price). Images can't be pasted — add photos later in the card editor.",'粘贴表格内容':'Paste Table','开始解析':'Parse','先粘贴表格内容':'Paste a table first','没解析出有效行，检查下格式':'No valid rows found — check the format.','把 Excel / WPS 里的表格复制粘贴进来，或在下方选择文件（只支持 Excel / CSV）。切卡分账表（带群成员、物品、收款状态）会自动整表导入成一个切卡订单。图片传不过来，导入后补传就行。':'Copy a table from Excel / WPS and paste it here, or pick a file below (Excel / CSV only). Group-order split sheets (with member, item and payment-status columns) are imported as one order automatically. Images can\'t be transferred — add photos after importing.','或选择文件（只支持 Excel / CSV）':'Or pick a file (Excel / CSV only)','文件已载入，点开始解析':'File loaded — tap Start Parsing','正在读取 Excel…':'Reading Excel…','只支持 Excel（.xlsx）和 CSV 文件':'Only Excel (.xlsx) and CSV files are supported','文件读取失败，试试复制粘贴':"Couldn't read the file — try copy & paste",'识别为切卡分账表，将整表导入成一个切卡订单：':'Recognized as a group-order split sheet — imported as one order:','订单名称':'Order Name','切卡表导入':'Imported Split Sheet','确认导入（切卡订单）':'Confirm Import (Order)','核对一下，勾选要导入的行，分类和状态都能改：':'Check the rows to import — you can change type and status:','确认导入':'Confirm Import','名字':'Name','没有勾选任何行':'No rows selected',
 '例：初雪特典卡':'e.g. First Snow Bonus Card','例：成员A':'e.g. Member A','例：《迷你2辑》':'e.g. Mini Album Vol. 2','例：预售特典 / 签售':'e.g. Pre-order bonus / Fan sign','例：9月韩网切卡团':'e.g. Sept. Korea group order','例：成员A 初雪特典卡 ×2':'e.g. Member A First Snow Card ×2','例：NCT Dream 限量小卡':'e.g. NCT Dream Limited Photocard','例：9月韩邮拼车':'e.g. Sept. Korea group shipping','例：韩国 / 日本':'e.g. Korea / Japan','例：官方手灯 ver.2':'e.g. Official Light Stick ver.2','例：韩国官网':'e.g. Korea official store','例：2026 首尔安可演唱会':'e.g. 2026 Seoul Encore Concert','例：组合名':'e.g. Group name','例：首尔':'e.g. Seoul','例：高尺天空巨蛋':'e.g. Gocheok Sky Dome','例：出道纪念卡':'e.g. Debut Anniversary Card','例：200g':'e.g. 200g','例：和海报一起':'e.g. Together with the poster','例：初雪特典卡 ×2':'e.g. First Snow Bonus Card ×2','例：微信 xxx / 微博 @xxx':'e.g. WeChat xxx / Weibo @xxx','卖家、瑕疵、物流…':'Seller, flaws, shipping…','团长、转运单号…':'GO manager, tracking no…','车头、转运公司…':'Organizer, forwarding company…'
 },
 ko:{
@@ -1964,12 +2119,12 @@ ko:{
 '搜索周边…':'굿즈 검색…','还没有周边，海报手灯专辑都可以记在这里':'아직 굿즈가 없어요. 포스터, 응원봉, 앨범 모두 기록할 수 있어요.','没有找到符合条件的周边':'조건에 맞는 굿즈가 없어요','编辑周边':'굿즈 편집','添加周边':'굿즈 추가','名称 *':'이름 *','类型':'종류','购买日期':'구매일','专辑':'앨범','手灯':'응원봉','海报':'포스터','衣服':'의류','玩偶':'인형',
 '+ 演唱会':'+ 콘서트','待定':'미정','日期待定':'날짜 미정','就是今天':'바로 오늘!','编辑演唱会':'콘서트 편집','添加演唱会':'콘서트 추가','演唱会名称 *':'콘서트 이름 *','艺人':'아티스트','城市':'도시','场馆 / 地址':'공연장 / 주소','票价 (¥)':'티켓 가격 (¥)','想去':'가고 싶음','已买票':'예매 완료','已参加':'관람 완료','还没有演唱会，点击「＋ 演唱会」开始记录吧':'아직 콘서트 기록이 없어요. 「+ 콘서트」를 눌러 시작하세요.',
 '+ 添加心愿':'+ 위시 추가','已收到':'받았어요','编辑心愿':'위시 편집','添加心愿':'위시 추가','想收的卡 *':'구하는 카드 *','目标价 (¥)':'목표가 (¥)','还没有心愿，想收的卡都列在这里':'아직 위시가 없어요. 구하는 카드를 적어보세요.','已收到！自动转入小卡收藏':'받았어요! 컬렉션으로 옮겼어요.','从心愿单转入':'위시리스트에서 이동','从表格导入':'표에서 가져옴',
-'网站标题':'사이트 제목','副标题':'부제목','头像':'프로필 사진','更换头像':'사진 변경','移除头像':'사진 삭제','也可以直接点击首页的头像更换':'홈 화면의 프로필 사진을 눌러도 바꿀 수 있어요.','封面背景':'커버 배경','更换封面背景':'커버 변경','恢复默认':'기본값으로','也可以直接点击首页的封面更换':'홈 화면의 커버를 눌러도 바꿀 수 있어요.','点击更换封面背景':'눌러서 커버 변경','联系方式':'연락처','外观':'화면 모드','跟随系统':'시스템 설정','深色':'다크','浅色':'라이트','跟随系统会随手机的深色 / 浅色模式自动切换':'휴대폰의 다크 / 라이트 모드를 자동으로 따라가요.','保存设置':'설정 저장','设置已保存':'설정을 저장했어요','数据备份':'데이터 백업','导出 / 导入':'내보내기 / 가져오기','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':'데이터는 이 기기의 브라우저에만 저장돼요. 기기를 바꾸거나 캐시를 지우면 사라지니, 정기적으로 백업하세요!','导出备份文件':'백업 내보내기','导入备份':'백업 가져오기','从表格导入':'표에서 가져오기','给 Terra 的信':'Terra에게 보내는 편지','查看':'보기','清理':'정리','删除全部数据':'전체 데이터 삭제','不可恢复，请先导出备份':'되돌릴 수 없어요. 먼저 백업하세요.','全部删除':'전체 삭제','语言':'언어',
+'网站标题':'사이트 제목','副标题':'부제목','头像':'프로필 사진','更换头像':'사진 변경','移除头像':'사진 삭제','也可以直接点击首页的头像更换':'홈 화면의 프로필 사진을 눌러도 바꿀 수 있어요.','封面背景':'커버 배경','更换封面背景':'커버 변경','恢复默认':'기본값으로','也可以直接点击首页的封面更换':'홈 화면의 커버를 눌러도 바꿀 수 있어요.','点击更换封面背景':'눌러서 커버 변경','联系方式':'연락처','外观':'화면 모드','跟随系统':'시스템 설정','深色':'다크','浅色':'라이트','跟随系统会随手机的深色 / 浅色模式自动切换':'휴대폰의 다크 / 라이트 모드를 자동으로 따라가요.','保存设置':'설정 저장','设置已保存':'설정을 저장했어요','数据备份':'데이터 백업','导出 / 导入':'내보내기 / 가져오기','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':'데이터는 이 기기의 브라우저에만 저장돼요. 기기를 바꾸거나 캐시를 지우면 사라지니, 정기적으로 백업하세요!','当前未登录，云同步未开启：数据只保存在这台设备，换手机或清缓存会丢。登录后会自动同步到云端，未登录时请定期导出备份。':'현재 로그인하지 않아 클라우드 동기화가 꺼져 있어요: 데이터는 이 기기에만 저장되며, 기기를 바꾸거나 캐시를 지우면 사라져요. 로그인하면 클라우드에 자동 동기화돼요. 그전까지는 정기적으로 백업을 내보내세요.','已登录，数据会自动同步到云端。导出一份本地备份，可以当作额外保险。':'로그인되어 있어 데이터가 클라우드에 자동 동기화돼요. 로컬 백업을 하나 내보내 두면 추가 보험이 돼요.','导出备份文件':'백업 내보내기','导入备份':'백업 가져오기','从表格导入':'표에서 가져오기','给 Terra 的信':'Terra에게 보내는 편지','查看':'보기','清理':'정리','删除全部数据':'전체 데이터 삭제','不可恢复，请先导出备份':'되돌릴 수 없어요. 먼저 백업하세요.','全部删除':'전체 삭제','语言':'언어',
 '头像已更换':'프로필 사진을 바꿨어요','封面背景已更换':'커버를 바꿨어요','已恢复默认封面':'커버를 기본값으로 되돌렸어요','已移除头像':'프로필 사진을 삭제했어요','备份文件已下载':'백업을 다운로드했어요','导入会覆盖当前所有数据，确定吗？（建议先导出备份）':'가져오면 현재 데이터가 모두 덮어씌워져요. 계속할까요? (먼저 백업 추천!)','备份已导入':'백업을 가져왔어요','文件格式不对，导入失败':'파일 형식이 올바르지 않아요','确定删除全部数据吗？此操作不可恢复！':'전체 데이터를 삭제할까요? 되돌릴 수 없어요!','再确认一次：真的要删除全部数据吗？':'한 번 더 확인할게요. 정말 전부 삭제할까요?','已清空全部数据':'전체 데이터를 지웠어요','已删除':'삭제했어요',
 '确定删除这张小卡吗？':'이 카드를 삭제할까요?','确定删除这条切卡记录吗？':'이 공동구매 기록을 삭제할까요?','确定删除这次拼车吗？':'이 합배송을 삭제할까요?','确定删除这个周边吗？':'이 굿즈를 삭제할까요?','确定删除这场演唱会吗？':'이 콘서트를 삭제할까요?','确定删除这条心愿吗？':'이 위시를 삭제할까요?','删除这位组员？':'이 멤버를 삭제할까요?','删除这位成员？':'이 멤버를 삭제할까요?',
 '云同步未启用':'클라우드 동기화 꺼짐','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':'현재 로컬 모드예요. 데이터는 이 기기에만 저장돼요. 아래 가이드대로 Firebase를 설정하면 이메일 로그인이 생겨요.','查看配置指南':'설정 가이드','已登录':'로그인됨','退出登录':'로그아웃','邮箱登录':'이메일 로그인','邮箱':'이메일','密码':'비밀번호','登录':'로그인','注册新账号':'회원가입','输入邮箱和密码':'이메일과 비밀번호를 입력하세요','密码至少6位':'비밀번호는 6자 이상이어야 해요','注册成功，已登录':'가입 완료 — 로그인됐어요','已退出登录':'로그아웃했어요','邮箱格式不对':'이메일 형식이 올바르지 않아요','账号不存在，请先注册':'계정이 없어요. 먼저 가입하세요','密码错误':'비밀번호가 틀렸어요','邮箱已注册，直接登录':'이미 가입된 이메일이에요. 로그인하세요','密码强度不够':'비밀번호가 너무 약해요','尝试太多次，稍后再试':'시도가 너무 많아요. 잠시 후 다시 해보세요','网络连接问题':'네트워크 오류예요','邮箱或密码错误':'이메일 또는 비밀번호가 틀렸어요','云端数据已同步':'클라우드 데이터를 동기화했어요','本机数据已上传到云端':'로컬 데이터를 클라우드에 올렸어요','云端同步失败，暂用本地数据':'클라우드 동기화에 실패해 로컬 데이터를 써요','同步失败请确认是否开启 VPN':'동기화에 실패하면 VPN이 켜져 있는지 확인하세요','本地存储空间不足，试试删掉一些照片':'로컬 저장 공간이 부족해요. 사진을 좀 지워보세요',
 '云同步配置指南':'클라우드 동기화 설정 가이드','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'약 5분 걸려요. 본인 Google 계정으로 프로젝트를 만들어야 데이터가 온전히 내 것이 돼요.','1. 创建 Firebase 项目':'1. Firebase 프로젝트 만들기','打开':'열기','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'로그인 → 프로젝트 만들기 (예: photocard-diary) → Analytics 끄기 → 만들기. 그런 다음 왼쪽 위 프로젝트 개요 → ','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'를 눌러 웹 앱 등록 → firebaseConfig를 복사하세요. 5단계에서 써요.','2. 开启邮箱登录':'2. 이메일 로그인 켜기','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'왼쪽 메뉴: 빌드 → Authentication → 시작하기 → 로그인 방법 → 「이메일/비밀번호」 켜기 → 저장.','3. 建数据库（存小卡数据）':'3. 데이터베이스 만들기 (카드 데이터용)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'왼쪽 메뉴: 빌드 → Firestore Database → 데이터베이스 만들기 → 위치 asia-east1 → 프로덕션 모드로 시작 → 「규칙」 탭에서 아래 전체를 붙여넣기 → 게시:','这条规则的意思：每个人只能读写自己的数据。':'이 규칙은 각자 자기 데이터만 읽고 쓸 수 있다는 뜻이에요.','4. 照片不用单独设置':'4. 사진은 따로 설정할 필요 없어요','照片会和数据一起存进第 3 步的数据库，不用开 Storage，也不用升级付费计划。第 3 步的规则里已经包含了照片的权限，这一步跳过就行。':'사진은 데이터와 함께 3단계 데이터베이스에 저장돼요. Storage를 켜거나 유료 플랜으로 업그레이드할 필요가 없어요. 3단계 규칙에 사진 권한이 이미 포함되어 있으니 이 단계는 건너뛰면 돼요.','5. 下载网页文件，贴入配置':'5. 웹페이지 파일 다운로드 후 설정 붙여넣기','在下面输入你的生日，下载网页文件：':'아래에 생일을 입력하고 웹페이지 파일을 다운로드하세요:','输入生日':'생일 입력','下载':'다운로드','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'다운로드한 파일을 메모장으로 열어, 상단 script 안의 FIREBASE_CONFIG에서 PASTE_HERE를 1단계에서 복사한 firebaseConfig 값으로 하나씩 바꾸고 저장하세요. 브라우저로 파일을 다시 열어 다음 단계를 진행하세요.','6. 完成':'6. 완료','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'사이트 「설정」에서 이메일과 비밀번호를 입력하고 「회원가입」을 누르세요. 이후 어떤 기기에서든 그 이메일로 로그인하면 데이터가 있어요. 첫 로그인 때 로컬 데이터가 자동으로 올라가요.','不配置也能用，但建议每日一备份。':'설정 없이도 쓸 수 있지만, 매일 백업을 추천해요.','生日不对，再想想':'생일이 아닌가 봐요. 다시 생각해 보세요','已开始下载':'다운로드를 시작했어요',
-'从表格文档导入':'표에서 가져오기','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':'Excel / WPS / 메모의 표를 복사해 붙여넣으세요 (머리글이 있으면 좋아요: 이미지, 카드 이름, 상태, 금액). 이미지는 붙여넣을 수 없으니, 가져온 뒤 카드에서 사진을 추가하세요.','粘贴表格内容':'붙여넣을 표','开始解析':'파싱 시작','先粘贴表格内容':'먼저 표를 붙여넣으세요','没解析出有效行，检查下格式':'유효한 행을 찾지 못했어요. 형식을 확인하세요','核对一下，勾选要导入的行，分类和状态都能改：':'가져올 행을 확인하세요. 분류와 상태를 바꿀 수 있어요:','确认导入':'가져오기 확인','名字':'이름','没有勾选任何行':'선택한 행이 없어요',
+'从表格文档导入':'표에서 가져오기','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':'Excel / WPS / 메모의 표를 복사해 붙여넣으세요 (머리글이 있으면 좋아요: 이미지, 카드 이름, 상태, 금액). 이미지는 붙여넣을 수 없으니, 가져온 뒤 카드에서 사진을 추가하세요.','粘贴表格内容':'붙여넣을 표','开始解析':'파싱 시작','先粘贴表格内容':'먼저 표를 붙여넣으세요','没解析出有效行，检查下格式':'유효한 행을 찾지 못했어요. 형식을 확인하세요','把 Excel / WPS 里的表格复制粘贴进来，或在下方选择文件（只支持 Excel / CSV）。切卡分账表（带群成员、物品、收款状态）会自动整表导入成一个切卡订单。图片传不过来，导入后补传就行。':'Excel / WPS 표를 복사해 붙여넣거나, 아래에서 파일을 선택하세요 (Excel / CSV만 지원). 공동구매 정산표(그룹 멤버, 물품, 수금 상태 열이 있는 표)는 하나의 주문으로 자동 가져와요. 이미지는 옮겨지지 않으니 가져온 뒤 추가하세요.','或选择文件（只支持 Excel / CSV）':'또는 파일 선택 (Excel / CSV만)','文件已载入，点开始解析':'파일을 불러왔어요. 파싱 시작을 누르세요','正在读取 Excel…':'Excel 읽는 중…','只支持 Excel（.xlsx）和 CSV 文件':'Excel(.xlsx)과 CSV 파일만 지원해요','文件读取失败，试试复制粘贴':'파일을 읽지 못했어요. 복사해서 붙여넣어 보세요','识别为切卡分账表，将整表导入成一个切卡订单：':'공동구매 정산표로 인식했어요. 하나의 주문으로 가져와요:','订单名称':'주문 이름','切卡表导入':'정산표 가져오기','确认导入（切卡订单）':'가져오기 확인 (주문)','核对一下，勾选要导入的行，分类和状态都能改：':'가져올 행을 확인하세요. 분류와 상태를 바꿀 수 있어요:','确认导入':'가져오기 확인','名字':'이름','没有勾选任何行':'선택한 행이 없어요',
 '例：初雪特典卡':'예: 첫눈 특전 카드','例：成员A':'예: 멤버 A','例：《迷你2辑》':'예: 미니 2집','例：预售特典 / 签售':'예: 예약 특전 / 팬사인','例：9月韩网切卡团':'예: 9월 한공구','例：成员A 初雪特典卡 ×2':'예: 멤버 A 첫눈 특전 카드 ×2','例：NCT Dream 限量小卡':'예: NCT Dream 한정 포카','例：9月韩邮拼车':'예: 9월 합배송','例：韩国 / 日本':'예: 한국 / 일본','例：官方手灯 ver.2':'예: 공식 응원봉 ver.2','例：韩国官网':'예: 한국 공식 스토어','例：2026 首尔安可演唱会':'예: 2026 서울 앙코르 콘서트','例：组合名':'예: 그룹명','例：首尔':'예: 서울','例：高尺天空巨蛋':'예: 고척스카이돔','例：出道纪念卡':'예: 데뷔 기념 카드','例：200g':'예: 200g','例：和海报一起':'예: 포스터와 함께','例：初雪特典卡 ×2':'예: 첫눈 특전 카드 ×2','例：微信 xxx / 微博 @xxx':'예: 위챗 xxx / 웨이보 @xxx','卖家、瑕疵、物流…':'판매자, 하자, 배송…','团长、转运单号…':'공구장, 운송장 번호…','车头、转运公司…':'총대, 배송대행지…'
 }};
 const PAT={
@@ -2090,7 +2245,7 @@ if(typeof requestAnimationFrame!=='undefined')requestAnimationFrame(()=>applyI18
 
 /* ============ 启动 ============ */
 document.addEventListener('keydown',e=>{
-  if(e.key==='Escape'){closeAddSheet();closeDatePick();cancelModal();skipEnvelope();if(document.getElementById('letterOverlay').classList.contains('show'))closeLetter()}
+  if(e.key==='Escape'){closeAddSheet();closeDatePick();closeSelPick();cancelModal();skipEnvelope();if(document.getElementById('letterOverlay').classList.contains('show'))closeLetter()}
   if((e.key==='Enter'||e.key===' ')&&e.target.classList&&e.target.classList.contains('x')){e.preventDefault();e.target.click()}
 });
 initFirebase();renderTabs();enterAnim();render();
