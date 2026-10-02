@@ -473,7 +473,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible{outline:none}
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 <script>
 /* ============ 数据层 ============ */
 const LS_KEY='photocard_collect_v1';
@@ -500,12 +499,12 @@ function seedData(){
 /* ============ Firebase 配置：把 Firebase 后台的配置贴到这里 ============
    部署指南见同目录 SETUP_GUIDE.md。不填则为本机模式（数据只存浏览器）。 */
 const FIREBASE_CONFIG={
-  apiKey:"PASTE_HERE",
-  authDomain:"PASTE_HERE",
-  projectId:"PASTE_HERE",
-  storageBucket:"PASTE_HERE",
-  messagingSenderId:"PASTE_HERE",
-  appId:"PASTE_HERE"
+  apiKey:"AIzaSyCvrA6RCqj4YqlQ7Pq0jKXY3xzZ8kkY4HM",
+  authDomain:"terra-cards-61be3.firebaseapp.com",
+  projectId:"terra-cards-61be3",
+  storageBucket:"terra-cards-61be3.firebasestorage.app",
+  messagingSenderId:"42422404159",
+  appId:"1:42422404159:web:66b9aa61ef09f50880648a"
 };
 const FIREBASE_ON=FIREBASE_CONFIG.apiKey!=="PASTE_HERE";
 /* 页面源码快照：脚本刚启动、界面还没渲染时抓取，保证内容干净原始。
@@ -516,7 +515,7 @@ const PAGE_SRC='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
    留空则不显示下载入口。
    注意：这只是个小心意式的门，密码写在网页源码里，并不能真正保密。 */
 const DL_PASSWORD="1209";
-let fAuth=null,fDb=null,fStorage=null,currentUser=null,cloudTimer=null;
+let fAuth=null,fDb=null,currentUser=null,cloudTimer=null;
 
 let DB;
 try{DB=JSON.parse(localStorage.getItem(LS_KEY))||null}catch(e){DB=null}
@@ -534,14 +533,14 @@ function saveDB(){saveLocal();scheduleCloudSync()}
 function initFirebase(){
   if(!FIREBASE_ON||typeof firebase==='undefined')return;
   try{firebase.initializeApp(FIREBASE_CONFIG)}catch(e){return}
-  fAuth=firebase.auth();fDb=firebase.firestore();fStorage=firebase.storage();
+  fAuth=firebase.auth();fDb=firebase.firestore();
   fAuth.onAuthStateChanged(async(user)=>{
     currentUser=user;
     if(user){
       try{
         const doc=await fDb.collection('users').doc(user.uid).get();
         if(doc.exists&&doc.data()&&doc.data().data&&doc.data().data.cards){
-          DB=doc.data().data;if(!DB.carpools)DB.carpools=[];if(!DB.concerts)DB.concerts=[];if(!DB.settings)DB.settings={};if(!('cover' in DB.settings))DB.settings.cover='';migrateNoSell();saveLocal();toast('云端数据已同步');
+          DB=await resolveCloudPhotos(doc.data().data,user.uid);if(!DB.carpools)DB.carpools=[];if(!DB.concerts)DB.concerts=[];if(!DB.settings)DB.settings={};if(!('cover' in DB.settings))DB.settings.cover='';migrateNoSell();saveLocal();toast('云端数据已同步');
         }else{
           await syncToCloud();toast('本机数据已上传到云端');
         }
@@ -561,21 +560,70 @@ function scheduleCloudSync(){
   cloudTimer=setTimeout(syncToCloud,1500);
 }
 
+/* 照片存进 Firestore 子集合 users/{uid}/photos，不再依赖 Storage（免 Blaze） */
+function phHash(s){let h1=0xdeadbeef,h2=0x41c6ce57;for(let i=0;i<s.length;i++){const ch=s.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return(h2>>>0).toString(16)+'_'+(h1>>>0).toString(16)+'_'+s.length}
+function collectPhotos(root){
+  const out=[];
+  const grab=(docId,obj,key)=>{const v=obj?obj[key]:'';if(typeof v==='string'&&v)out.push({docId:docId,get:()=>obj[key],set:nv=>{obj[key]=nv},url:v})};
+  (root.cards||[]).forEach(it=>grab('cards_'+it.id,it,'photo'));
+  (root.merch||[]).forEach(it=>grab('merch_'+it.id,it,'photo'));
+  if(root.settings){grab('settings_cover',root.settings,'cover');grab('settings_avatar',root.settings,'avatar')}
+  return out;
+}
+function shrinkPhotoURL(url,max,q){
+  return new Promise(res=>{
+    try{
+      const img=new Image();
+      img.onload=()=>{try{let w=img.width,h=img.height;if(Math.max(w,h)>max){const s=max/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s)}const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(img,0,0,w,h);res(c.toDataURL('image/jpeg',q))}catch(e){res(url)}};
+      img.onerror=()=>res(url);
+      img.src=url;
+    }catch(e){res(url)}
+  });
+}
 async function syncToCloud(){
   if(!currentUser||!fDb)return;
   try{
-    for(const col of ['cards','merch']){
-      for(const item of DB[col]){
-        if(item.photo&&item.photo.indexOf('data:')===0){
-          const ref=fStorage.ref('users/'+currentUser.uid+'/photos/'+item.id+'.jpg');
-          await ref.putString(item.photo,'data_url');
-          item.photo=await ref.getDownloadURL();
-        }
+    const uid=currentUser.uid;
+    const userRef=fDb.collection('users').doc(uid);
+    const photosCol=userRef.collection('photos');
+    const manKey='terra_phm_'+uid;let man={};
+    try{man=JSON.parse(localStorage.getItem(manKey))||{}}catch(e){man={}}
+    const cloudDB=JSON.parse(JSON.stringify(DB));
+    const localEntries=collectPhotos(DB),cloudEntries=collectPhotos(cloudDB);
+    const liveIds={};
+    for(let i=0;i<localEntries.length;i++){
+      const docId=localEntries[i].docId;liveIds[docId]=1;
+      let url=localEntries[i].url;
+      if(url.indexOf('data:')===0){
+        if(url.length>950000){url=await shrinkPhotoURL(url,900,.78);if(url.length>950000)url=await shrinkPhotoURL(url,700,.68)}
+        const h=phHash(url);
+        if(man[docId]!==h){await photosCol.doc(docId).set({img:url});man[docId]=h}
+        cloudEntries[i].set('fsphoto:'+docId);
       }
     }
-    await fDb.collection('users').doc(currentUser.uid).set({data:DB,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
-    saveLocal();
+    let prevIds=[];
+    try{const prev=await userRef.get();if(prev.exists&&prev.data()&&Array.isArray(prev.data().photoIds))prevIds=prev.data().photoIds}catch(e){}
+    await userRef.set({data:cloudDB,photoIds:Object.keys(liveIds),updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+    for(const oldId of prevIds){if(!liveIds[oldId]){try{await photosCol.doc(oldId).delete()}catch(e){}delete man[oldId]}}
+    try{localStorage.setItem(manKey,JSON.stringify(man))}catch(e){}
   }catch(e){console.warn('cloud sync failed',e)}
+}
+async function resolveCloudPhotos(db,uid){
+  const photosCol=fDb.collection('users').doc(uid).collection('photos');
+  const entries=collectPhotos(db);const man={};
+  for(const e of entries){
+    const v=e.get();
+    if(typeof v==='string'&&v.indexOf('fsphoto:')===0){
+      const docId=v.slice(8);
+      const snap=await photosCol.doc(docId).get();
+      const url=(snap.exists&&snap.data()&&snap.data().img)||'';
+      e.set(url);if(url)man[docId]=phHash(url);
+    }else if(typeof v==='string'&&v.indexOf('data:')===0){
+      man[e.docId]=phHash(v);
+    }
+  }
+  try{localStorage.setItem('terra_phm_'+uid,JSON.stringify(man))}catch(err){}
+  return db;
 }
 
 async function doLogin(){
@@ -607,20 +655,15 @@ service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid} {
       allow read, write: if request.auth != null &amp;&amp; request.auth.uid == uid;
+      match /photos/{photoId} {
+        allow read, write: if request.auth != null &amp;&amp; request.auth.uid == uid;
+      }
     }
   }
 }</pre>
   <p>这条规则的意思：每个人只能读写自己的数据。</p>
-  <h4>4. 开文件存储（存照片）</h4>
-  <p>左侧 构建 → Storage → 开始使用 → 生产模式启动 → 「规则」标签粘贴下面这段 → 发布：</p>
-  <pre>rules_version = '2';
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /users/{uid}/photos/{file} {
-      allow read, write: if request.auth != null &amp;&amp; request.auth.uid == uid;
-    }
-  }
-}</pre>
+  <h4>4. 照片不用单独设置</h4>
+  <p>照片会和数据一起存进第 3 步的数据库，不用开 Storage，也不用升级付费计划。第 3 步的规则里已经包含了照片的权限，这一步跳过就行。</p>
   <h4>5. 下载网页文件，贴入配置</h4>
   <p>在下面输入你的生日，下载网页文件：</p>
   ${DL_PASSWORD?`
@@ -667,6 +710,7 @@ function accountHTML(){
       <div class="t">已登录</div>
       <div class="s">${esc(currentUser.email)} · 数据自动同步到云端</div>
       <div class="toolbar t10"><button class="btn small ghost" onclick="doLogout()">退出登录</button></div>
+      <div class="s" style="margin-top:10px">同步失败请确认是否开启 VPN</div>
     </div>`;
   }
   return `<div class="acct">
@@ -678,6 +722,7 @@ function accountHTML(){
       <button class="btn small" onclick="doLogin()">登录</button>
       <button class="btn small ghost" onclick="doRegister()">注册新账号</button>
     </div>
+    <div class="s" style="margin-top:10px">同步失败请确认是否开启 VPN</div>
   </div>`;
 }
 
@@ -1903,8 +1948,8 @@ en:{
 '网站标题':'Site Title','副标题':'Subtitle','头像':'Avatar','更换头像':'Change Avatar','移除头像':'Remove Avatar','也可以直接点击首页的头像更换':'You can also tap the avatar on the home page.','封面背景':'Cover Background','更换封面背景':'Change Cover','恢复默认':'Restore Default','也可以直接点击首页的封面更换':'You can also tap the cover on the home page.','点击更换封面背景':'Tap to change cover','联系方式':'Contact','外观':'Appearance','跟随系统':'System','深色':'Dark','浅色':'Light','跟随系统会随手机的深色 / 浅色模式自动切换':"Follows your phone's dark / light mode automatically.",'保存设置':'Save Settings','设置已保存':'Settings saved','数据备份':'Data Backup','导出 / 导入':'Export / Import','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':"Data lives only in this device's browser — switching phones or clearing cache will lose it. Export backups regularly!",'导出备份文件':'Export Backup','导入备份':'Import Backup','从表格导入':'Import from Table','给 Terra 的信':'A Letter for Terra','查看':'View','清理':'Cleanup','删除全部数据':'Delete All Data','不可恢复，请先导出备份':"This can't be undone — export a backup first.",'全部删除':'Delete All','语言':'Language',
 '头像已更换':'Avatar updated','封面背景已更换':'Cover updated','已恢复默认封面':'Cover restored','已移除头像':'Avatar removed','备份文件已下载':'Backup downloaded','导入会覆盖当前所有数据，确定吗？（建议先导出备份）':'Importing will overwrite all current data. Continue? (Back up first!)','备份已导入':'Backup imported','文件格式不对，导入失败':'Invalid file — import failed','确定删除全部数据吗？此操作不可恢复！':'Delete ALL data? This cannot be undone!','再确认一次：真的要删除全部数据吗？':'One more check — really delete everything?','已清空全部数据':'All data cleared','已删除':'Deleted',
 '确定删除这张小卡吗？':'Delete this card?','确定删除这条切卡记录吗？':'Delete this group order?','确定删除这次拼车吗？':'Delete this group shipment?','确定删除这个周边吗？':'Delete this merch item?','确定删除这场演唱会吗？':'Delete this concert?','确定删除这条心愿吗？':'Delete this wish?','删除这位组员？':'Delete this member?','删除这位成员？':'Delete this member?',
-'云同步未启用':'Cloud Sync Off','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':"You're in local mode — data stays on this device. Set up Firebase with the guide below to enable email sign-in.",'查看配置指南':'Setup Guide','已登录':'Signed In','退出登录':'Sign Out','邮箱登录':'Email Sign-In','邮箱':'Email','密码':'Password','登录':'Sign In','注册新账号':'Create Account','输入邮箱和密码':'Enter your email and password','密码至少6位':'Password must be at least 6 characters','注册成功，已登录':"Account created — you're signed in.",'已退出登录':'Signed out','邮箱格式不对':'Invalid email format','账号不存在，请先注册':'Account not found — create one first.','密码错误':'Wrong password','邮箱已注册，直接登录':'Email already registered — sign in instead.','密码强度不够':'Password too weak','尝试太多次，稍后再试':'Too many attempts — try again later.','网络连接问题':'Network error','邮箱或密码错误':'Wrong email or password','云端数据已同步':'Cloud data synced','本机数据已上传到云端':'Local data uploaded to the cloud','云端同步失败，暂用本地数据':'Cloud sync failed — using local data.','本地存储空间不足，试试删掉一些照片':'Local storage is full — try deleting some photos.',
-'云同步配置指南':'Cloud Sync Setup Guide','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'Takes about 5 minutes. Use your own Google account so the data belongs only to you.','1. 创建 Firebase 项目':'1. Create a Firebase Project','打开':'Open','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'Sign in → Create a project (e.g. photocard-diary) → turn off Analytics → Create. Then at the top left, Project Overview → click','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'to register a Web app → copy the firebaseConfig — you will need it in step 5.','2. 开启邮箱登录':'2. Enable Email Sign-In','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'Left sidebar: Build → Authentication → Get started → Sign-in method → enable "Email/Password" → Save.','3. 建数据库（存小卡数据）':'3. Create the Database (for card data)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'Left sidebar: Build → Firestore Database → Create database → location asia-east1 → Start in production mode → open the "Rules" tab, paste the block below → Publish:','这条规则的意思：每个人只能读写自己的数据。':'This rule means everyone can only read and write their own data.','4. 开文件存储（存照片）':'4. Set Up File Storage (for photos)','左侧 构建 → Storage → 开始使用 → 生产模式启动 → 「规则」标签粘贴下面这段 → 发布：':'Left sidebar: Build → Storage → Get started → Start in production mode → in the "Rules" tab, paste the block below → Publish:','5. 下载网页文件，贴入配置':'5. Download the Page File & Paste the Config','在下面输入你的生日，下载网页文件：':'Enter your birthday below to download the page file:','输入生日':'Enter birthday','下载':'Download','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'Then open the downloaded file in a text editor, find FIREBASE_CONFIG in the script at the top, and replace each PASTE_HERE with the matching value from the firebaseConfig you copied in step 1. Save, reopen the file in your browser, and continue.','6. 完成':'6. Done','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'In the site\'s Settings, enter an email and password and tap "Create Account". From then on, sign in with that email on any device and your data is there. Your first sign-in uploads your existing local data automatically.','不配置也能用，但建议每日一备份。':'It works without setup too — but back up daily.','生日不对，再想想':'Wrong birthday — think again.','已开始下载':'Download started',
+'云同步未启用':'Cloud Sync Off','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':"You're in local mode — data stays on this device. Set up Firebase with the guide below to enable email sign-in.",'查看配置指南':'Setup Guide','已登录':'Signed In','退出登录':'Sign Out','邮箱登录':'Email Sign-In','邮箱':'Email','密码':'Password','登录':'Sign In','注册新账号':'Create Account','输入邮箱和密码':'Enter your email and password','密码至少6位':'Password must be at least 6 characters','注册成功，已登录':"Account created — you're signed in.",'已退出登录':'Signed out','邮箱格式不对':'Invalid email format','账号不存在，请先注册':'Account not found — create one first.','密码错误':'Wrong password','邮箱已注册，直接登录':'Email already registered — sign in instead.','密码强度不够':'Password too weak','尝试太多次，稍后再试':'Too many attempts — try again later.','网络连接问题':'Network error','邮箱或密码错误':'Wrong email or password','云端数据已同步':'Cloud data synced','本机数据已上传到云端':'Local data uploaded to the cloud','云端同步失败，暂用本地数据':'Cloud sync failed — using local data.','同步失败请确认是否开启 VPN':'If sync fails, make sure your VPN is on','本地存储空间不足，试试删掉一些照片':'Local storage is full — try deleting some photos.',
+'云同步配置指南':'Cloud Sync Setup Guide','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'Takes about 5 minutes. Use your own Google account so the data belongs only to you.','1. 创建 Firebase 项目':'1. Create a Firebase Project','打开':'Open','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'Sign in → Create a project (e.g. photocard-diary) → turn off Analytics → Create. Then at the top left, Project Overview → click','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'to register a Web app → copy the firebaseConfig — you will need it in step 5.','2. 开启邮箱登录':'2. Enable Email Sign-In','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'Left sidebar: Build → Authentication → Get started → Sign-in method → enable "Email/Password" → Save.','3. 建数据库（存小卡数据）':'3. Create the Database (for card data)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'Left sidebar: Build → Firestore Database → Create database → location asia-east1 → Start in production mode → open the "Rules" tab, paste the block below → Publish:','这条规则的意思：每个人只能读写自己的数据。':'This rule means everyone can only read and write their own data.','4. 照片不用单独设置':'4. Photos Need No Extra Setup','照片会和数据一起存进第 3 步的数据库，不用开 Storage，也不用升级付费计划。第 3 步的规则里已经包含了照片的权限，这一步跳过就行。':'Photos are stored in the step 3 database together with your data — no need to enable Storage or upgrade to a paid plan. The step 3 rules already cover photos, so you can skip this step.','5. 下载网页文件，贴入配置':'5. Download the Page File & Paste the Config','在下面输入你的生日，下载网页文件：':'Enter your birthday below to download the page file:','输入生日':'Enter birthday','下载':'Download','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'Then open the downloaded file in a text editor, find FIREBASE_CONFIG in the script at the top, and replace each PASTE_HERE with the matching value from the firebaseConfig you copied in step 1. Save, reopen the file in your browser, and continue.','6. 完成':'6. Done','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'In the site\'s Settings, enter an email and password and tap "Create Account". From then on, sign in with that email on any device and your data is there. Your first sign-in uploads your existing local data automatically.','不配置也能用，但建议每日一备份。':'It works without setup too — but back up daily.','生日不对，再想想':'Wrong birthday — think again.','已开始下载':'Download started',
 '从表格文档导入':'Import from a Table','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':"Copy a table from Excel / WPS / Notes and paste it here (headers help: Image, Card Name, Status, Price). Images can't be pasted — add photos later in the card editor.",'粘贴表格内容':'Paste Table','开始解析':'Parse','先粘贴表格内容':'Paste a table first','没解析出有效行，检查下格式':'No valid rows found — check the format.','核对一下，勾选要导入的行，分类和状态都能改：':'Check the rows to import — you can change type and status:','确认导入':'Confirm Import','名字':'Name','没有勾选任何行':'No rows selected',
 '例：初雪特典卡':'e.g. First Snow Bonus Card','例：成员A':'e.g. Member A','例：《迷你2辑》':'e.g. Mini Album Vol. 2','例：预售特典 / 签售':'e.g. Pre-order bonus / Fan sign','例：9月韩网切卡团':'e.g. Sept. Korea group order','例：成员A 初雪特典卡 ×2':'e.g. Member A First Snow Card ×2','例：NCT Dream 限量小卡':'e.g. NCT Dream Limited Photocard','例：9月韩邮拼车':'e.g. Sept. Korea group shipping','例：韩国 / 日本':'e.g. Korea / Japan','例：官方手灯 ver.2':'e.g. Official Light Stick ver.2','例：韩国官网':'e.g. Korea official store','例：2026 首尔安可演唱会':'e.g. 2026 Seoul Encore Concert','例：组合名':'e.g. Group name','例：首尔':'e.g. Seoul','例：高尺天空巨蛋':'e.g. Gocheok Sky Dome','例：出道纪念卡':'e.g. Debut Anniversary Card','例：200g':'e.g. 200g','例：和海报一起':'e.g. Together with the poster','例：初雪特典卡 ×2':'e.g. First Snow Bonus Card ×2','例：微信 xxx / 微博 @xxx':'e.g. WeChat xxx / Weibo @xxx','卖家、瑕疵、物流…':'Seller, flaws, shipping…','团长、转运单号…':'GO manager, tracking no…','车头、转运公司…':'Organizer, forwarding company…'
 },
@@ -1922,8 +1967,8 @@ ko:{
 '网站标题':'사이트 제목','副标题':'부제목','头像':'프로필 사진','更换头像':'사진 변경','移除头像':'사진 삭제','也可以直接点击首页的头像更换':'홈 화면의 프로필 사진을 눌러도 바꿀 수 있어요.','封面背景':'커버 배경','更换封面背景':'커버 변경','恢复默认':'기본값으로','也可以直接点击首页的封面更换':'홈 화면의 커버를 눌러도 바꿀 수 있어요.','点击更换封面背景':'눌러서 커버 변경','联系方式':'연락처','外观':'화면 모드','跟随系统':'시스템 설정','深色':'다크','浅色':'라이트','跟随系统会随手机的深色 / 浅色模式自动切换':'휴대폰의 다크 / 라이트 모드를 자동으로 따라가요.','保存设置':'설정 저장','设置已保存':'설정을 저장했어요','数据备份':'데이터 백업','导出 / 导入':'내보내기 / 가져오기','数据只存在这台设备的浏览器里，换手机或清缓存会丢。定期导出备份很关键！':'데이터는 이 기기의 브라우저에만 저장돼요. 기기를 바꾸거나 캐시를 지우면 사라지니, 정기적으로 백업하세요!','导出备份文件':'백업 내보내기','导入备份':'백업 가져오기','从表格导入':'표에서 가져오기','给 Terra 的信':'Terra에게 보내는 편지','查看':'보기','清理':'정리','删除全部数据':'전체 데이터 삭제','不可恢复，请先导出备份':'되돌릴 수 없어요. 먼저 백업하세요.','全部删除':'전체 삭제','语言':'언어',
 '头像已更换':'프로필 사진을 바꿨어요','封面背景已更换':'커버를 바꿨어요','已恢复默认封面':'커버를 기본값으로 되돌렸어요','已移除头像':'프로필 사진을 삭제했어요','备份文件已下载':'백업을 다운로드했어요','导入会覆盖当前所有数据，确定吗？（建议先导出备份）':'가져오면 현재 데이터가 모두 덮어씌워져요. 계속할까요? (먼저 백업 추천!)','备份已导入':'백업을 가져왔어요','文件格式不对，导入失败':'파일 형식이 올바르지 않아요','确定删除全部数据吗？此操作不可恢复！':'전체 데이터를 삭제할까요? 되돌릴 수 없어요!','再确认一次：真的要删除全部数据吗？':'한 번 더 확인할게요. 정말 전부 삭제할까요?','已清空全部数据':'전체 데이터를 지웠어요','已删除':'삭제했어요',
 '确定删除这张小卡吗？':'이 카드를 삭제할까요?','确定删除这条切卡记录吗？':'이 공동구매 기록을 삭제할까요?','确定删除这次拼车吗？':'이 합배송을 삭제할까요?','确定删除这个周边吗？':'이 굿즈를 삭제할까요?','确定删除这场演唱会吗？':'이 콘서트를 삭제할까요?','确定删除这条心愿吗？':'이 위시를 삭제할까요?','删除这位组员？':'이 멤버를 삭제할까요?','删除这位成员？':'이 멤버를 삭제할까요?',
-'云同步未启用':'클라우드 동기화 꺼짐','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':'현재 로컬 모드예요. 데이터는 이 기기에만 저장돼요. 아래 가이드대로 Firebase를 설정하면 이메일 로그인이 생겨요.','查看配置指南':'설정 가이드','已登录':'로그인됨','退出登录':'로그아웃','邮箱登录':'이메일 로그인','邮箱':'이메일','密码':'비밀번호','登录':'로그인','注册新账号':'회원가입','输入邮箱和密码':'이메일과 비밀번호를 입력하세요','密码至少6位':'비밀번호는 6자 이상이어야 해요','注册成功，已登录':'가입 완료 — 로그인됐어요','已退出登录':'로그아웃했어요','邮箱格式不对':'이메일 형식이 올바르지 않아요','账号不存在，请先注册':'계정이 없어요. 먼저 가입하세요','密码错误':'비밀번호가 틀렸어요','邮箱已注册，直接登录':'이미 가입된 이메일이에요. 로그인하세요','密码强度不够':'비밀번호가 너무 약해요','尝试太多次，稍后再试':'시도가 너무 많아요. 잠시 후 다시 해보세요','网络连接问题':'네트워크 오류예요','邮箱或密码错误':'이메일 또는 비밀번호가 틀렸어요','云端数据已同步':'클라우드 데이터를 동기화했어요','本机数据已上传到云端':'로컬 데이터를 클라우드에 올렸어요','云端同步失败，暂用本地数据':'클라우드 동기화에 실패해 로컬 데이터를 써요','本地存储空间不足，试试删掉一些照片':'로컬 저장 공간이 부족해요. 사진을 좀 지워보세요',
-'云同步配置指南':'클라우드 동기화 설정 가이드','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'약 5분 걸려요. 본인 Google 계정으로 프로젝트를 만들어야 데이터가 온전히 내 것이 돼요.','1. 创建 Firebase 项目':'1. Firebase 프로젝트 만들기','打开':'열기','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'로그인 → 프로젝트 만들기 (예: photocard-diary) → Analytics 끄기 → 만들기. 그런 다음 왼쪽 위 프로젝트 개요 → ','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'를 눌러 웹 앱 등록 → firebaseConfig를 복사하세요. 5단계에서 써요.','2. 开启邮箱登录':'2. 이메일 로그인 켜기','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'왼쪽 메뉴: 빌드 → Authentication → 시작하기 → 로그인 방법 → 「이메일/비밀번호」 켜기 → 저장.','3. 建数据库（存小卡数据）':'3. 데이터베이스 만들기 (카드 데이터용)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'왼쪽 메뉴: 빌드 → Firestore Database → 데이터베이스 만들기 → 위치 asia-east1 → 프로덕션 모드로 시작 → 「규칙」 탭에서 아래 전체를 붙여넣기 → 게시:','这条规则的意思：每个人只能读写自己的数据。':'이 규칙은 각자 자기 데이터만 읽고 쓸 수 있다는 뜻이에요.','4. 开文件存储（存照片）':'4. 파일 스토리지 켜기 (사진용)','左侧 构建 → Storage → 开始使用 → 生产模式启动 → 「规则」标签粘贴下面这段 → 发布：':'왼쪽 메뉴: 빌드 → Storage → 시작하기 → 프로덕션 모드로 시작 → 「규칙」 탭에 아래를 붙여넣기 → 게시:','5. 下载网页文件，贴入配置':'5. 웹페이지 파일 다운로드 후 설정 붙여넣기','在下面输入你的生日，下载网页文件：':'아래에 생일을 입력하고 웹페이지 파일을 다운로드하세요:','输入生日':'생일 입력','下载':'다운로드','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'다운로드한 파일을 메모장으로 열어, 상단 script 안의 FIREBASE_CONFIG에서 PASTE_HERE를 1단계에서 복사한 firebaseConfig 값으로 하나씩 바꾸고 저장하세요. 브라우저로 파일을 다시 열어 다음 단계를 진행하세요.','6. 完成':'6. 완료','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'사이트 「설정」에서 이메일과 비밀번호를 입력하고 「회원가입」을 누르세요. 이후 어떤 기기에서든 그 이메일로 로그인하면 데이터가 있어요. 첫 로그인 때 로컬 데이터가 자동으로 올라가요.','不配置也能用，但建议每日一备份。':'설정 없이도 쓸 수 있지만, 매일 백업을 추천해요.','生日不对，再想想':'생일이 아닌가 봐요. 다시 생각해 보세요','已开始下载':'다운로드를 시작했어요',
+'云同步未启用':'클라우드 동기화 꺼짐','当前是本机模式：数据只保存在这台设备。按下面指南配置 Firebase 后，这里会出现邮箱登录。':'현재 로컬 모드예요. 데이터는 이 기기에만 저장돼요. 아래 가이드대로 Firebase를 설정하면 이메일 로그인이 생겨요.','查看配置指南':'설정 가이드','已登录':'로그인됨','退出登录':'로그아웃','邮箱登录':'이메일 로그인','邮箱':'이메일','密码':'비밀번호','登录':'로그인','注册新账号':'회원가입','输入邮箱和密码':'이메일과 비밀번호를 입력하세요','密码至少6位':'비밀번호는 6자 이상이어야 해요','注册成功，已登录':'가입 완료 — 로그인됐어요','已退出登录':'로그아웃했어요','邮箱格式不对':'이메일 형식이 올바르지 않아요','账号不存在，请先注册':'계정이 없어요. 먼저 가입하세요','密码错误':'비밀번호가 틀렸어요','邮箱已注册，直接登录':'이미 가입된 이메일이에요. 로그인하세요','密码强度不够':'비밀번호가 너무 약해요','尝试太多次，稍后再试':'시도가 너무 많아요. 잠시 후 다시 해보세요','网络连接问题':'네트워크 오류예요','邮箱或密码错误':'이메일 또는 비밀번호가 틀렸어요','云端数据已同步':'클라우드 데이터를 동기화했어요','本机数据已上传到云端':'로컬 데이터를 클라우드에 올렸어요','云端同步失败，暂用本地数据':'클라우드 동기화에 실패해 로컬 데이터를 써요','同步失败请确认是否开启 VPN':'동기화에 실패하면 VPN이 켜져 있는지 확인하세요','本地存储空间不足，试试删掉一些照片':'로컬 저장 공간이 부족해요. 사진을 좀 지워보세요',
+'云同步配置指南':'클라우드 동기화 설정 가이드','全程约 5 分钟。建议用自己的 Google 账号建项目，这样数据只属于你。':'약 5분 걸려요. 본인 Google 계정으로 프로젝트를 만들어야 데이터가 온전히 내 것이 돼요.','1. 创建 Firebase 项目':'1. Firebase 프로젝트 만들기','打开':'열기','登录 → 创建项目（名字如 photocard-diary）→ Analytics 关掉 → 创建。然后左上角项目概览 → 点':'로그인 → 프로젝트 만들기 (예: photocard-diary) → Analytics 끄기 → 만들기. 그런 다음 왼쪽 위 프로젝트 개요 → ','注册 Web 应用 → 复制那段 firebaseConfig，第 5 步要用。':'를 눌러 웹 앱 등록 → firebaseConfig를 복사하세요. 5단계에서 써요.','2. 开启邮箱登录':'2. 이메일 로그인 켜기','左侧 构建 → Authentication → 开始使用 → 登录方法 → 启用「电子邮件/密码」→ 保存。':'왼쪽 메뉴: 빌드 → Authentication → 시작하기 → 로그인 방법 → 「이메일/비밀번호」 켜기 → 저장.','3. 建数据库（存小卡数据）':'3. 데이터베이스 만들기 (카드 데이터용)','左侧 构建 → Firestore Database → 创建数据库 → 位置选 asia-east1 → 生产模式启动 → 点「规则」标签，把下面整段粘贴进去 → 发布：':'왼쪽 메뉴: 빌드 → Firestore Database → 데이터베이스 만들기 → 위치 asia-east1 → 프로덕션 모드로 시작 → 「규칙」 탭에서 아래 전체를 붙여넣기 → 게시:','这条规则的意思：每个人只能读写自己的数据。':'이 규칙은 각자 자기 데이터만 읽고 쓸 수 있다는 뜻이에요.','4. 照片不用单独设置':'4. 사진은 따로 설정할 필요 없어요','照片会和数据一起存进第 3 步的数据库，不用开 Storage，也不用升级付费计划。第 3 步的规则里已经包含了照片的权限，这一步跳过就行。':'사진은 데이터와 함께 3단계 데이터베이스에 저장돼요. Storage를 켜거나 유료 플랜으로 업그레이드할 필요가 없어요. 3단계 규칙에 사진 권한이 이미 포함되어 있으니 이 단계는 건너뛰면 돼요.','5. 下载网页文件，贴入配置':'5. 웹페이지 파일 다운로드 후 설정 붙여넣기','在下面输入你的生日，下载网页文件：':'아래에 생일을 입력하고 웹페이지 파일을 다운로드하세요:','输入生日':'생일 입력','下载':'다운로드','然后用记事本打开下载好的文件，找到顶部 script 里的 FIREBASE_CONFIG，把 PASTE_HERE 逐个换成第 1 步复制的 firebaseConfig 对应的值，保存。再用浏览器打开这个文件，继续下一步。':'다운로드한 파일을 메모장으로 열어, 상단 script 안의 FIREBASE_CONFIG에서 PASTE_HERE를 1단계에서 복사한 firebaseConfig 값으로 하나씩 바꾸고 저장하세요. 브라우저로 파일을 다시 열어 다음 단계를 진행하세요.','6. 完成':'6. 완료','在网站「设置」→ 输入邮箱密码点「注册新账号」→ 以后在任何设备登录这个邮箱，数据都在。第一次登录会自动把本机已有的数据传上云端。':'사이트 「설정」에서 이메일과 비밀번호를 입력하고 「회원가입」을 누르세요. 이후 어떤 기기에서든 그 이메일로 로그인하면 데이터가 있어요. 첫 로그인 때 로컬 데이터가 자동으로 올라가요.','不配置也能用，但建议每日一备份。':'설정 없이도 쓸 수 있지만, 매일 백업을 추천해요.','生日不对，再想想':'생일이 아닌가 봐요. 다시 생각해 보세요','已开始下载':'다운로드를 시작했어요',
 '从表格文档导入':'표에서 가져오기','把 Excel / WPS / 备忘录里的表格复制后粘贴进来（带表头最好：图片、卡片名字、状态、金额）。图片粘贴不过来，导入后在小卡里补传照片就行。':'Excel / WPS / 메모의 표를 복사해 붙여넣으세요 (머리글이 있으면 좋아요: 이미지, 카드 이름, 상태, 금액). 이미지는 붙여넣을 수 없으니, 가져온 뒤 카드에서 사진을 추가하세요.','粘贴表格内容':'붙여넣을 표','开始解析':'파싱 시작','先粘贴表格内容':'먼저 표를 붙여넣으세요','没解析出有效行，检查下格式':'유효한 행을 찾지 못했어요. 형식을 확인하세요','核对一下，勾选要导入的行，分类和状态都能改：':'가져올 행을 확인하세요. 분류와 상태를 바꿀 수 있어요:','确认导入':'가져오기 확인','名字':'이름','没有勾选任何行':'선택한 행이 없어요',
 '例：初雪特典卡':'예: 첫눈 특전 카드','例：成员A':'예: 멤버 A','例：《迷你2辑》':'예: 미니 2집','例：预售特典 / 签售':'예: 예약 특전 / 팬사인','例：9月韩网切卡团':'예: 9월 한공구','例：成员A 初雪特典卡 ×2':'예: 멤버 A 첫눈 특전 카드 ×2','例：NCT Dream 限量小卡':'예: NCT Dream 한정 포카','例：9月韩邮拼车':'예: 9월 합배송','例：韩国 / 日本':'예: 한국 / 일본','例：官方手灯 ver.2':'예: 공식 응원봉 ver.2','例：韩国官网':'예: 한국 공식 스토어','例：2026 首尔安可演唱会':'예: 2026 서울 앙코르 콘서트','例：组合名':'예: 그룹명','例：首尔':'예: 서울','例：高尺天空巨蛋':'예: 고척스카이돔','例：出道纪念卡':'예: 데뷔 기념 카드','例：200g':'예: 200g','例：和海报一起':'예: 포스터와 함께','例：初雪特典卡 ×2':'예: 첫눈 특전 카드 ×2','例：微信 xxx / 微博 @xxx':'예: 위챗 xxx / 웨이보 @xxx','卖家、瑕疵、物流…':'판매자, 하자, 배송…','团长、转运单号…':'공구장, 운송장 번호…','车头、转运公司…':'총대, 배송대행지…'
 }};
