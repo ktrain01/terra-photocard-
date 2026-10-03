@@ -220,7 +220,7 @@ nav#tabs .tabbar{position:relative}
 .selfield::after{content:'⌄';color:var(--muted);font-size:14px;line-height:1}
 .toolbar .selfield{width:auto;padding:10px 14px;background:var(--card);font-size:14px}
 .imp-row .selfield{width:auto;padding:7px 8px;border-radius:10px;font-size:12px;flex-shrink:0}
-#selOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:230;padding:20px}
+#selOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:230;padding:20px}
 #selOverlay.show{display:flex}
 #selSheet{background:var(--card);border:1px solid var(--line);border-radius:22px;width:100%;max-width:340px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:pop .28s cubic-bezier(.2,.9,.3,1.15) both}
 #selTitle{font-size:13px;color:var(--muted);letter-spacing:.04em;margin-bottom:8px}
@@ -230,7 +230,9 @@ nav#tabs .tabbar{position:relative}
 .sel-opt.sel{background:var(--t2);font-weight:600}
 .sel-opt .ck{opacity:0;font-size:13px;flex:none}
 .sel-opt.sel .ck{opacity:1}
-#dpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:220;padding:20px}
+button,.selfield,.dp-cell,.dp-nav,.sel-opt{touch-action:manipulation;-webkit-tap-highlight-color:transparent;-webkit-touch-callout:none}
+.dp-cell,.sel-opt,.dp-nav{user-select:none;-webkit-user-select:none}
+#dpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:220;padding:20px}
 #dpOverlay.show{display:flex}
 #dpSheet{background:var(--card);border:1px solid var(--line);border-radius:22px;width:100%;max-width:340px;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.5);animation:pop .28s cubic-bezier(.2,.9,.3,1.15) both}
 .dp-head{display:flex;align-items:center;gap:2px;margin-bottom:10px}
@@ -542,6 +544,7 @@ const PAGE_SRC='<!DOCTYPE html>\n'+document.documentElement.outerHTML;
 const DL_PASSWORD="1209";
 let fAuth=null,fDb=null,currentUser=null,cloudTimer=null;
 
+let lsRescueDone=false;
 let DB;
 try{DB=JSON.parse(localStorage.getItem(LS_KEY))||null}catch(e){DB=null}
 if(!DB||!DB.cards){DB=seedData();saveLocal()}
@@ -552,8 +555,35 @@ if(!DB.settings)DB.settings={};if(!('cover' in DB.settings))DB.settings.cover=''
 function migrateNoSell(){if(DB&&DB.cards)DB.cards.forEach(c=>{if(c.status==='selling'||c.status==='sold')c.status='own'})}
 migrateNoSell();
 
-function saveLocal(){try{localStorage.setItem(LS_KEY,JSON.stringify(DB))}catch(e){toast('本地存储空间不足，试试删掉一些照片')}}
-function saveDB(){saveLocal();scheduleCloudSync()}
+function saveLocal(){
+  try{localStorage.setItem(LS_KEY,JSON.stringify(DB));lsRescueDone=false;return true}
+  catch(e){
+    if(!lsRescueDone){lsRescueDone=true;rescueLocalSpace()}
+    else toast('存储空间不足，这次修改刷新后会丢失，请删掉一些带照片的内容');
+    return false
+  }
+}
+async function rescueLocalSpace(){
+  toast('存储空间快满了，正在自动压缩照片腾出空间…');
+  try{
+    const jobs=[];
+    const walk=o=>{
+      if(!o||typeof o!=='object')return;
+      for(const k of Object.keys(o)){
+        const v=o[k];
+        if(typeof v==='string'&&v.startsWith('data:image')&&v.length>60000)jobs.push(shrinkPhotoURL(v,640,0.72).then(nu=>{if(nu&&nu.length<v.length)o[k]=nu}));
+        else if(v&&typeof v==='object')walk(v);
+      }
+    };
+    walk(DB);
+    await Promise.all(jobs);
+  }catch(e){}
+  let ok=false;
+  try{localStorage.setItem(LS_KEY,JSON.stringify(DB));ok=true}catch(e){}
+  if(ok){lsRescueDone=false;scheduleCloudSync();toast('已自动压缩照片腾出空间，数据已保存好')}
+  else toast('存储空间不足，这次修改刷新后会丢失，请删掉一些带照片的内容');
+}
+function saveDB(){DB.updatedAt=Date.now();saveLocal();scheduleCloudSync()}
 
 function initFirebase(){
   if(!FIREBASE_ON||typeof firebase==='undefined')return;
@@ -565,7 +595,14 @@ function initFirebase(){
       try{
         const doc=await fDb.collection('users').doc(user.uid).get();
         if(doc.exists&&doc.data()&&doc.data().data&&doc.data().data.cards){
-          DB=await resolveCloudPhotos(doc.data().data,user.uid);if(!DB.carpools)DB.carpools=[];if(!DB.concerts)DB.concerts=[];if(!DB.settings)DB.settings={};if(!('cover' in DB.settings))DB.settings.cover='';migrateNoSell();saveLocal();toast('云端数据已同步');
+          const cloudData=doc.data().data;
+          const cloudTs=+cloudData.updatedAt||0;
+          const localTs=(DB&&+DB.updatedAt)||0;
+          if(localTs>cloudTs){
+            await syncToCloud();toast('已把本机最新数据同步到云端');
+          }else{
+            DB=await resolveCloudPhotos(cloudData,user.uid);if(!DB.carpools)DB.carpools=[];if(!DB.concerts)DB.concerts=[];if(!DB.settings)DB.settings={};if(!('cover' in DB.settings))DB.settings.cover='';migrateNoSell();saveLocal();toast('云端数据已同步');
+          }
         }else{
           await syncToCloud();toast('本机数据已上传到云端');
         }
@@ -584,6 +621,9 @@ function scheduleCloudSync(){
   clearTimeout(cloudTimer);
   cloudTimer=setTimeout(syncToCloud,1500);
 }
+function flushCloudSync(){if(cloudTimer){clearTimeout(cloudTimer);cloudTimer=null;syncToCloud()}}
+window.addEventListener('pagehide',flushCloudSync);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushCloudSync()});
 
 /* 照片存进 Firestore 子集合 users/{uid}/photos，不再依赖 Storage（免 Blaze） */
 function phHash(s){let h1=0xdeadbeef,h2=0x41c6ce57;for(let i=0;i<s.length;i++){const ch=s.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);return(h2>>>0).toString(16)+'_'+(h1>>>0).toString(16)+'_'+s.length}
@@ -954,11 +994,11 @@ function renderDatePick(){
   for(let i=0;i<startDay;i++)cells+='<span class="dp-cell"></span>';
   for(let d=1;d<=days;d++){
     const ds=y+'-'+String(m+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
-    cells+=`<button type="button" class="dp-cell${ds===dpSel?' sel':''}${ds===today?' today':''}" onclick="dpPick('${ds}')">${d}</button>`;
+    cells+=`<button type="button" class="dp-cell${ds===dpSel?' sel':''}${ds===today?' today':''}" data-ds="${ds}" onclick="dpPick('${ds}')">${d}</button>`;
   }
   document.getElementById('dpGrid').innerHTML=cells;
 }
-function dpPick(ds){dpSel=ds;renderDatePick()}
+function dpPick(ds){dpSel=ds;document.querySelectorAll('#dpGrid .dp-cell').forEach(c=>c.classList.toggle('sel',c.dataset.ds===ds))}
 function dpMove(n){dpView.m+=n;if(dpView.m<0){dpView.m=11;dpView.y--}if(dpView.m>11){dpView.m=0;dpView.y++}renderDatePick()}
 function dpMoveYear(n){dpView.y+=n;renderDatePick()}
 function closeDatePick(){document.getElementById('dpOverlay').classList.remove('show')}
@@ -989,7 +1029,7 @@ function renderSelList(){
   const reg=SEL_REG[selKey];if(!reg)return;
   document.getElementById('selList').innerHTML=reg.pairs.map((p,i)=>`<button type="button" class="sel-opt${String(p.v)===String(selVal)?' sel':''}" onclick="selPickIdx(${i})"><span>${esc(trText(p.t))}</span><span class="ck">✓</span></button>`).join('');
 }
-function selPickIdx(i){const reg=SEL_REG[selKey];if(!reg)return;selVal=reg.pairs[i].v;renderSelList()}
+function selPickIdx(i){const reg=SEL_REG[selKey];if(!reg)return;selVal=reg.pairs[i].v;document.querySelectorAll('#selList .sel-opt').forEach((el,j)=>el.classList.toggle('sel',j===i))}
 function closeSelPick(){document.getElementById('selOverlay').classList.remove('show')}
 function selConfirm(){
   const reg=SEL_REG[selKey];if(!reg){closeSelPick();return}
